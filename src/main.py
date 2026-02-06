@@ -4,16 +4,38 @@ import asyncio
 from src.core.config import settings
 from src.api.chat import router as chat_router
 from src.services.transcription import transcription_client
-from src.core.controller import jota_controller # Initializes subscription
+from src.services.inference import inference_client
+# Controller initialized on import
+from src.core.controller import jota_controller 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    task = asyncio.create_task(transcription_client.connect_and_listen())
+    logger = logging.getLogger("uvicorn")
+    logger.info("Starting up services...")
+    
+    # Transcription Service
+    task_transcription = asyncio.create_task(transcription_client.connect_and_listen())
+    
+    # Inference Service connection is lazy (on first request) or explicit?
+    # "connect()" checks if connected. We can pre-connect here.
+    try:
+        await inference_client.connect()
+    except Exception as e:
+        logger.warning(f"Initial connection to Inference Engine failed: {e}")
+
     yield
+    
     # Shutdown
+    logger.info("Shutting down services...")
     transcription_client.stop()
-    await task
+    await inference_client.invoke_shutdown()
+    
+    await task_transcription
+    if inference_client.websocket:
+        await inference_client.websocket.close()
+
+import logging
 
 app = FastAPI(
     title=settings.APP_NAME,
