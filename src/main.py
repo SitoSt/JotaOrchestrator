@@ -17,8 +17,7 @@ async def lifespan(app: FastAPI):
     # Transcription Service
     task_transcription = asyncio.create_task(transcription_client.connect_and_listen())
     
-    # Inference Service connection is lazy (on first request) or explicit?
-    # "connect()" checks if connected. We can pre-connect here.
+    # Connect to Inference Service (Lazy connection or explicit)
     try:
         await inference_client.connect()
     except Exception as e:

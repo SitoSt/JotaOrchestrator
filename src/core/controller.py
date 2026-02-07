@@ -10,8 +10,7 @@ logger = logging.getLogger(__name__)
 class JotaController:
     def __init__(self):
         # Subscribe to input events
-        # Note: Event bus is primarily for fire-and-forget or decoupled logic.
-        # For direct streaming response (API -> Controller -> API), we might call handle_input directly.
+        # Subscribe to input events for async/decoupled processing.
         event_bus.subscribe(self.process_event_async)
 
     async def process_event_async(self, event: dict):
@@ -33,8 +32,7 @@ class JotaController:
         """
         content = payload.get("content")
         session_id = payload.get("session_id", "default")
-        # Logic for user identification can be enhanced. 
-        # Using session_id as user_id for inference client for now.
+        # Use session_id as user_id for inference client mapping.
         user_id = session_id 
 
         logger.info(f"Controller processing input for {user_id}: {content}")
@@ -42,10 +40,8 @@ class JotaController:
         # 1. Update Memory (User Input)
         await memory_manager.add_message(session_id, "user", content)
 
-        # 2. Get Context (Optional: could be passed to infer if client supported it)
-        # For now, memory manager handles history, but we might want to fetch it 
-        # to construct the prompt if the Inference Engine was stateless.
-        # Since Inference Engine is stateful (sessions), we just send the prompt.
+        # 2. Get Context
+        # Memory manager handles context internally. We send the prompt directly to the stateful Inference Engine.
         
         # 3. Call Inference & Stream
         full_response = ""

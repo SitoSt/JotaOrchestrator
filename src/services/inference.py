@@ -9,10 +9,10 @@ from src.core.config import settings
 logger = logging.getLogger(__name__)
 
 class InferenceClient:
-    def __init__(self):
-        self.url = settings.INFERENCE_SERVICE_URL
-        self.client_id = settings.INFERENCE_CLIENT_ID
-        self.api_key = settings.INFERENCE_API_KEY
+    def __init__(self, url: str = None, client_id: str = None, api_key: str = None):
+        self.url = url or settings.INFERENCE_SERVICE_URL
+        self.client_id = client_id or settings.INFERENCE_CLIENT_ID
+        self.api_key = api_key or settings.INFERENCE_API_KEY
         
         self.websocket = None
         self.lock = asyncio.Lock()
@@ -45,23 +45,9 @@ class InferenceClient:
             await self.websocket.send(json.dumps(auth_payload))
             logger.info("Sent authentication credentials")
             
-            # Start background listener for unsolicited messages (like session created, etc.)
-            # However, since 'infer' needs to read from the socket, we need a strategy.
-            # Best approach for a single websocket with concurrent functionality:
-            # - Have a produce_loop reading from the socket and dispatching events.
-            # - 'infer' waits on specific events or queue.
-            
-            # For simplicity given the requirements:
-            # The protocol is request-response based but streaming. 
-            # If we simply lock send/receive, we can't do concurrent multi-user infer.
-            # BUT the prompt says "Orquestador pueda reenviar los tokens ... conforme lleguen".
-            # AND "Orquestador... cliente maestro... mandar cada uno de sus prompts simultaneamente".
-            
-            # To support simultaneous prompts over one connection, we MUST have a reader task
-            # dispatching messages to the correct waiting handler (based on session_id).
-            
-            # Re-architecting for concurrency:
-            # We need a background reader loop.
+            # Start background listener for unsolicited messages and concurrent request handling.
+            # A reader loop is required to dispatch incoming tokens to the correct session queue
+            # while allowing the 'infer' method to yield results in real-time.
             self._response_queues: Dict[str, asyncio.Queue] = {}  # session_id -> Queue
             self._reader_task = asyncio.create_task(self._read_loop())
             
@@ -82,26 +68,7 @@ class InferenceClient:
                     session_id = data.get("session_id")
                     
                     if op == "session_created":
-                        # We might need a way to map this back to who asked for it.
-                        # Since protocols usually imply request-response, let's look at the request.
-                        # BUT, if we have multiple pending creations, we need to know which is which.
-                        # If the protocol allows sending a 'user_id' in create_session or returns it, great.
-                        # If not, and we must do active_sessions = {user_id: session_id}, 
-                        # we have a serialization problem if we blast create_session.
-                        # Assuming for now we serialized session creation or use a different mechanism.
-                        #
-                        # Let's assume we use a queue for session creation results if not tied to specific ID.
-                        pass # Valid for now, handled in get_session via 'wait_for' mechanism if possible.
-                             # Actually, easiest is: get_session sends create, waits for next session_created?
-                             # No, racing condition.
-                             #
-                             # Constraint Check: "Mapear internamente el User_ID del cliente final con este session_id"
-                             # Protocol: Solicitar: {"op": "create_session"} -> Recibir: {"op": "session_created", "session_id": "..."}
-                             # It doesn't seem to echo back user_id. 
-                             # We must ensure sequential session creation or rely on implicit ordering (risky).
-                             # Or maybe the protocol supports extra fields? NOT specified.
-                             #
-                             # Strategy: Lock session creation. One at a time.
+                        # Handle session creation response.
                         if self._session_creation_future and not self._session_creation_future.done():
                              self._session_creation_future.set_result(session_id)
 
@@ -216,14 +183,11 @@ class InferenceClient:
                 retries -= 1
                 self.websocket = None # Force reconnect logic in get_session -> connect
                 
-                # Clean up session execution state but KEEP the active_sessions mapping?
-                # If connection died, server might have lost session? 
-                # If server persists sessions, we keep it. If not, we might fail on next reuse.
-                # Conservative approach: Assume session is dead on disconnect (unless server is robust).
-                # But requirement says "re-autenticarse automaticamente al recuperar la conexión."
-                # It doesn't enable session recovery explicitly, but typically sessions are volatile.
-                # However, let's try to reuse. If it fails (invalid session), we'll need logic to invalidate locally.
-                # For now, just retry the connect.
+                # Clean up logic on failure.
+                # If connection drops, we attempt to reconnect (retries > 0).
+                # Session validity is uncertain on reconnect, but we attempt reuse. 
+                # Ideally, the server preserves sessions or we might need to invalidate 'active_sessions'.
+
                 
                 if retries < 0:
                      logger.error("Max retries exceeded for inference.")

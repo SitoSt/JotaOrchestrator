@@ -14,26 +14,15 @@ class ChatRequest(BaseModel):
 async def chat_endpoint(request: ChatRequest):
     """
     Receives direct text input.
-    For POST requests, we just push to controller but can't stream back easily 
-    without Server-Sent Events (SSE) or Response streaming.
-    User requested to "keep existing POST endpoint for compatibility".
-    The original implementation pushed to event_bus.
-    The new controller has 'handle_input' which is a generator.
-    We need to decide if POST should wait or just fire-and-forget.
-    Original was fire-and-forget (event_bus.publish).
-    Let's keep it behaving similarly or consume it fully.
+    Kept for compatibility with REST clients.
     """
     event = {
         "content": request.text,
         "session_id": request.session_id,
         "source": "api"
     }
-    # We consume the generator but discard output for POST to maintain "compatibility" 
-    # if the client doesn't expect a stream. Or we could return the full text.
-    # Given "compatibility", sticking to previous behavior (async processing) is safest,
-    # but we need to ensure it runs.
-    # Using the helper process_event_async to drain it in background?
-    # Actually, fastAPI handlers await. Let's just consume and return status.
+    # Consume the generator fully to process the request, but return the aggregated response (or status)
+    # as this is a standard POST request, not a stream.
     
     full_response = ""
     async for token in jota_controller.handle_input(event):
@@ -61,10 +50,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             async for token in jota_controller.handle_input(payload):
                 await websocket.send_text(token)
                 
-            # Optional: Send a delimiter or end-of-message signal
-            # The client might expect just tokens. 
-            # If the user needs to know when it ends, we might implement a protocol.
-            # But requirement just says "broadcast of the tokens ... in real time".
+            # Stream tokens back in real-time
             
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for user {user_id}")

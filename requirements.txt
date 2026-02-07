@@ -3,3 +3,5 @@ uvicorn[standard]
 pydantic-settings
 websockets
 redis
+pytest
+pytest-asyncio

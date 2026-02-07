@@ -41,3 +41,25 @@ El sistema se divide en módulos especializados:
 3. **Endpoints Principales**:
    - `GET /health`: Estado del servicio.
    - `WS /api/v1/ws/chat/{user_id}`: Chat en vivo.
+
+## 🧪 Testing
+
+El proyecto incluye una suite de pruebas robusta para asegurar la estabilidad del cliente de inferencia (24/7).
+
+### 1. Ejecutar Pruebas Unitarias
+Verifica la lógica básica y configuración del cliente.
+```bash
+pytest tests/unit/
+```
+
+### 2. Ejecutar Pruebas de Integración
+Levanta un servidor Mock y prueba el flujo completo de autenticación e inferencia.
+```bash
+pytest tests/integration/
+```
+
+### 3. Ejecutar Pruebas de Carga (Stress Test)
+Simula múltiples usuarios concurrentes para verificar estabilidad bajo carga.
+```bash
+pytest tests/stress/test_load.py
+```
