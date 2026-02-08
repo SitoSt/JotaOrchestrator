@@ -20,14 +20,16 @@ El sistema se divide en módulos especializados:
 
 ### 2. Integración de Inferencia
 - Cliente asíncrono robusto conectado al **Inference Center**.
-- Soporte **Multusesión**: Gestiona múltiples conversaciones simultáneamente sobre un solo canal.
-- **Protocolo Seguro**: Autenticación inmediata (`client_id`, `api_key`) y re-conexión automática.
+- Soporte **Multusesión Stateless**: Gestiona múltiples conversaciones simultáneamente delegando el estado en JotaDB.
+- **Resiliencia**: Autenticación inmediata, **Exponential Backoff** para reconexión, y aborto de sesiones en desconexión del cliente.
 
 ## 🛠️ Configuración y Ejecución
 
 1. **Variables de Entorno**:
    Crea un archivo `.env` basado en `.env.example`:
    ```env
+   JOTA_DB_URL="http://localhost:8080"
+   JOTA_DB_API_KEY="tu_db_key"
    INFERENCE_SERVICE_URL="ws://greenhouse.local:3000/api/inference"
    INFERENCE_CLIENT_ID="tu_id"
    INFERENCE_API_KEY="tu_key"
@@ -39,8 +41,8 @@ El sistema se divide en módulos especializados:
    ```
 
 3. **Endpoints Principales**:
-   - `GET /health`: Estado del servicio.
-   - `WS /api/v1/ws/chat/{user_id}`: Chat en vivo.
+   - `GET /health`: **Deep Health Check** (Verifica JotaDB + Motor Inferencia).
+   - `WS /ws/chat/{user_id}`: Chat en vivo.
 
 ## 🧪 Testing
 

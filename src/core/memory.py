@@ -1,6 +1,6 @@
 import httpx
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 from src.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -12,10 +12,26 @@ class MemoryManager:
             "Authorization": f"Bearer {settings.JOTA_DB_API_KEY}",
             "Content-Type": "application/json"
         }
-        self.client = httpx.AsyncClient(headers=self.headers, timeout=10.0)
+        # Connection retries for resilience
+        transport = httpx.AsyncHTTPTransport(retries=3)
+        self.client = httpx.AsyncClient(transport=transport, headers=self.headers, timeout=10.0)
 
     async def close(self):
         await self.client.aclose()
+        
+    async def check_health(self) -> bool:
+        """
+        Deep health check for JotaDB connection.
+        """
+        try:
+            # Assuming JotaDB has a health endpoint or we can check via a lightweight call
+            # using auth/client with a dummy key or similar if no dedicated health endpoint exists.
+            # Ideally JotaDB should have /health. Let's assume it does or we check connectivity.
+            response = await self.client.get(f"{self.base_url}/health") # Adjust endpoint if needed
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"MemoryManager Health Check Failed: {e}")
+            return False
 
     async def validate_client_key(self, client_key: str) -> bool:
         """
@@ -68,10 +84,14 @@ class MemoryManager:
             # Non-critical? Maybe critical if we lose the link.
             pass
 
-    async def save_message(self, conversation_id: str, role: str, content: str):
+    async def save_message(self, conversation_id: str, role: Literal["user", "assistant", "system"], content: str):
         """
         Saves a message to JotaDB.
         """
+        if role not in ["user", "assistant", "system"]:
+            logger.error(f"Invalid message role: {role}")
+            return
+
         try:
             payload = {
                 "conversation_id": conversation_id,
@@ -93,5 +113,3 @@ class MemoryManager:
             await self.client.patch(url, json=payload)
          except Exception as e:
              logger.error(f"Failed to mark conversation error: {e}")
-
-memory_manager = MemoryManager()

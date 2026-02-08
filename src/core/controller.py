@@ -2,13 +2,13 @@ import logging
 import asyncio
 from typing import AsyncGenerator
 from src.core.events import event_bus
-from src.core.memory import memory_manager
-from src.services.inference import inference_client
+from src.services.inference import InferenceClient
 
 logger = logging.getLogger(__name__)
 
 class JotaController:
-    def __init__(self):
+    def __init__(self, inference_client: InferenceClient):
+        self.inference_client = inference_client
         # Subscribe to input events
         # Subscribe to input events for async/decoupled processing.
         event_bus.subscribe(self.process_event_async)
@@ -44,7 +44,7 @@ class JotaController:
         # Call Inference & Stream
         try:
             logger.info("Streaming from Inference Engine...")
-            async for token in inference_client.infer(session_id, content, conversation_id):
+            async for token in self.inference_client.infer(session_id, content, conversation_id):
                 yield token
             
             logger.info("Inference stream complete.")
@@ -53,5 +53,3 @@ class JotaController:
         except Exception as e:
             logger.error(f"Error during inference flow: {e}")
             yield f" [Error: {str(e)}]"
-
-jota_controller = JotaController()

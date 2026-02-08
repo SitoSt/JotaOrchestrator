@@ -1,7 +1,6 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from src.core.controller import jota_controller
-from src.core.memory import memory_manager
+from src.core.services import jota_controller, memory_manager, inference_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,8 +28,8 @@ async def chat_endpoint(request: ChatRequest):
         session_id = conversation.get("inference_session_id")
         
         if not session_id:
-            from src.services.inference import inference_client
-            session_id = await inference_client.get_session(request.user_id)
+            # Explicitly create a new session
+            session_id = await inference_client.create_session()
             await memory_manager.update_conversation_session(conversation_id, session_id)
 
         # 3. Save User Message
@@ -65,6 +64,8 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     await websocket.accept()
     logger.info(f"WebSocket connected for user {user_id}")
     
+    session_id = None # Keep track for aborting
+    
     try:
         # 2. Conversation & Session Management
         conversation = await memory_manager.get_or_create_conversation(user_id)
@@ -73,8 +74,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         
         if not session_id:
             logger.info(f"No active inference session for conversation {conversation_id}. Creating new one...")
-            from src.services.inference import inference_client
-            session_id = await inference_client.get_session(user_id)
+            session_id = await inference_client.create_session()
             await memory_manager.update_conversation_session(conversation_id, session_id)
         
         logger.info(f"Using conversation {conversation_id} and session {session_id}")
@@ -99,6 +99,10 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for user {user_id}")
+        if session_id:
+            logger.info(f"Aborting session {session_id} due to client disconnect")
+            await inference_client.abort_session(session_id)
+            
     except Exception as e:
         logger.error(f"WebSocket error for user {user_id}: {e}")
         await websocket.close(code=1011)
