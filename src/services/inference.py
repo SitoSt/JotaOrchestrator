@@ -30,7 +30,7 @@ class InferenceClient:
         """
         try:
             # Connect only if not already connected
-            if self.websocket and self.websocket.open:
+            if self.websocket is not None:
                 return
 
             logger.info(f"Connecting to Inference Engine at {self.url}")
@@ -67,13 +67,28 @@ class InferenceClient:
                     op = data.get("op")
                     session_id = data.get("session_id")
                     
-                    if op == "session_created":
+                    logger.debug(f"📨 Received message: op={op}, session_id={session_id}, data={data}")
+                    
+                    if op == "hello":
+                        # Server greeting - authentication required
+                        logger.info(f"Received hello from server: {data.get('message', 'ready')}")
+                        # Authentication is already sent in connect(), so we just acknowledge
+                        
+                    elif op == "auth_success":
+                        # Authentication successful
+                        client_id = data.get("client_id")
+                        max_sessions = data.get("max_sessions")
+                        logger.info(f"Authentication successful - client_id: {client_id}, max_sessions: {max_sessions}")
+                        
+                    elif op == "session_created":
                         # Handle session creation response.
+                        logger.debug(f"Session created: {session_id}")
                         if self._session_creation_future and not self._session_creation_future.done():
                              self._session_creation_future.set_result(session_id)
 
                     elif session_id and session_id in self._response_queues:
                         # Dispatch to the specific session's queue
+                        logger.debug(f"Dispatching to queue for session {session_id}")
                         await self._response_queues[session_id].put(data)
                     else:
                         logger.warning(f"Received unhandled message: {data}")
@@ -102,7 +117,7 @@ class InferenceClient:
                 return self.active_sessions[user_id]
             
             # Connect if needed
-            if not self.websocket or not self.websocket.open:
+            if self.websocket is None:
                 await self.connect()
 
             # Create new session - Serialize this op to map response correctly
@@ -136,11 +151,14 @@ class InferenceClient:
         while retries >= 0:
             try:
                 # Get valid session
+                logger.debug(f"🔍 Getting session for user {user_id}")
                 session_id = await self.get_session(user_id)
+                logger.debug(f"✅ Got session: {session_id}")
                 
                 # Setup queue for this session
                 if session_id not in self._response_queues:
                     self._response_queues[session_id] = asyncio.Queue()
+                    logger.debug(f"Created response queue for session {session_id}")
                 
                 # Send inference request
                 request = {
@@ -150,17 +168,21 @@ class InferenceClient:
                     "params": params
                 }
                 
-                if not self.websocket or not self.websocket.open:
+                if self.websocket is None:
                      # Force reconnect if socket died in background
+                     logger.warning("WebSocket is None, reconnecting...")
                      await self.connect()
 
+                logger.debug(f"📤 Sending inference request: {request}")
                 await self.websocket.send(json.dumps(request))
                 
                 # Stream responses
                 queue = self._response_queues[session_id]
+                logger.debug(f"⏳ Waiting for responses on queue for session {session_id}")
                 
                 while True:
                     data = await queue.get()
+                    logger.debug(f"📥 Got data from queue: {data}")
                     
                     if data is None: # Connection died
                         raise websockets.exceptions.ConnectionClosed(1006, "Internal Signal")
@@ -168,13 +190,17 @@ class InferenceClient:
                     op = data.get("op")
                     
                     if op == "token":
-                        yield data.get("content", "")
+                        token = data.get("content", "")
+                        logger.debug(f"🔤 Yielding token: {repr(token)}")
+                        yield token
                     elif op == "end":
                         # Usage stats could be handled here
+                        logger.debug("✅ Inference complete (end signal)")
                         break
                     elif op == "error":
-                        logger.error(f"Inference Error: {data.get('content')}")
-                        raise Exception(data.get("content"))
+                        error_msg = data.get("content")
+                        logger.error(f"Inference Error: {error_msg}")
+                        raise Exception(error_msg)
                 
                 return # Successful completion
 
