@@ -139,85 +139,69 @@ class InferenceClient:
             finally:
                 self._session_creation_future = None
 
-    async def infer(self, user_id: str, prompt: str, params: Optional[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
+    async def infer(self, session_id: str, prompt: str, conversation_id: str, params: Optional[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
         """
         Sends an inference request and yields tokens in real-time.
-        Handles reconnection automatically.
+        Buffers the response and saves it to JotaDB on completion.
         """
         if params is None:
             params = {"temp": 0.7}
+            
+        # Buffer for the full response
+        response_buffer = []
 
-        retries = 1
-        while retries >= 0:
-            try:
-                # Get valid session
-                logger.debug(f"🔍 Getting session for user {user_id}")
-                session_id = await self.get_session(user_id)
-                logger.debug(f"✅ Got session: {session_id}")
-                
-                # Setup queue for this session
-                if session_id not in self._response_queues:
-                    self._response_queues[session_id] = asyncio.Queue()
-                    logger.debug(f"Created response queue for session {session_id}")
-                
-                # Send inference request
-                request = {
-                    "op": "infer",
-                    "session_id": session_id,
-                    "prompt": prompt,
-                    "params": params
-                }
-                
-                if self.websocket is None:
-                     # Force reconnect if socket died in background
-                     logger.warning("WebSocket is None, reconnecting...")
-                     await self.connect()
+        try:
+            # Setup queue for this session if not exists
+            if session_id not in self._response_queues:
+                self._response_queues[session_id] = asyncio.Queue()
+            
+            # Send inference request
+            request = {
+                "op": "infer",
+                "session_id": session_id,
+                "prompt": prompt,
+                "params": params
+            }
+            
+            if not self.websocket or not self.websocket.open:
+                    # Force reconnect if socket died in background
+                    await self.connect()
 
-                logger.debug(f"📤 Sending inference request: {request}")
-                await self.websocket.send(json.dumps(request))
+            await self.websocket.send(json.dumps(request))
+            
+            # Stream responses
+            queue = self._response_queues[session_id]
+            
+            while True:
+                data = await queue.get()
                 
-                # Stream responses
-                queue = self._response_queues[session_id]
-                logger.debug(f"⏳ Waiting for responses on queue for session {session_id}")
-                
-                while True:
-                    data = await queue.get()
-                    logger.debug(f"📥 Got data from queue: {data}")
+                if data is None: # Connection died
+                    raise websockets.exceptions.ConnectionClosed(1006, "Internal Signal")
                     
-                    if data is None: # Connection died
-                        raise websockets.exceptions.ConnectionClosed(1006, "Internal Signal")
-                        
-                    op = data.get("op")
-                    
-                    if op == "token":
-                        token = data.get("content", "")
-                        logger.debug(f"🔤 Yielding token: {repr(token)}")
-                        yield token
-                    elif op == "end":
-                        # Usage stats could be handled here
-                        logger.debug("✅ Inference complete (end signal)")
-                        break
-                    elif op == "error":
-                        error_msg = data.get("content")
-                        logger.error(f"Inference Error: {error_msg}")
-                        raise Exception(error_msg)
+                op = data.get("op")
                 
-                return # Successful completion
+                if op == "token":
+                    content = data.get("content", "")
+                    response_buffer.append(content)
+                    yield content
+                elif op == "end":
+                    # Save full message to JotaDB
+                    full_response = "".join(response_buffer)
+                    await memory_manager.save_message(conversation_id, "assistant", full_response)
+                    break
+                elif op == "error":
+                    error_msg = data.get("content")
+                    logger.error(f"Inference Error: {error_msg}")
+                    # Mark conversation as error
+                    await memory_manager.mark_conversation_error(conversation_id)
+                    raise Exception(error_msg)
+            
+            return # Successful completion
 
-            except (websockets.exceptions.ConnectionClosed, Exception) as e:
-                logger.warning(f"Inference interrupted: {e}. Retrying...")
-                retries -= 1
-                self.websocket = None # Force reconnect logic in get_session -> connect
-                
-                # Clean up logic on failure.
-                # If connection drops, we attempt to reconnect (retries > 0).
-                # Session validity is uncertain on reconnect, but we attempt reuse. 
-                # Ideally, the server preserves sessions or we might need to invalidate 'active_sessions'.
-
-                
-                if retries < 0:
-                     logger.error("Max retries exceeded for inference.")
-                     raise e
+        except (websockets.exceptions.ConnectionClosed, Exception) as e:
+            logger.warning(f"Inference interrupted: {e}")
+            await memory_manager.mark_conversation_error(conversation_id)
+            raise e
 
     # Ensure to cancel reader task on shutdown
     async def invoke_shutdown(self):

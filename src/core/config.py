@@ -5,7 +5,9 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     DEBUG: bool = False
     
-    REDIS_URL: str = "redis://localhost:6379/0"
+    JOTA_DB_URL: str = "http://green-house.local/api/db/"
+    JOTA_DB_API_KEY: str = "default_key"  # Should be set via env var
+    
     TRANSCRIPTION_SERVICE_URL: str = "ws://localhost:9002"
     INFERENCE_SERVICE_URL: str = "ws://greenhouse.local/api/inference"
     INFERENCE_CLIENT_ID: str = "sito"
