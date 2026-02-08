@@ -24,10 +24,8 @@ class MemoryManager:
         Deep health check for JotaDB connection.
         """
         try:
-            # Assuming JotaDB has a health endpoint or we can check via a lightweight call
-            # using auth/client with a dummy key or similar if no dedicated health endpoint exists.
-            # Ideally JotaDB should have /health. Let's assume it does or we check connectivity.
-            response = await self.client.get(f"{self.base_url}/health") # Adjust endpoint if needed
+            # Check /health endpoint
+            response = await self.client.get(f"{self.base_url}/health")
             return response.status_code == 200
         except Exception as e:
             logger.error(f"MemoryManager Health Check Failed: {e}")
@@ -54,14 +52,21 @@ class MemoryManager:
         """
         try:
             # 1. Try to find active conversation
-            response = await self.client.get(f"{self.base_url}/chat/conversation", params={"user_id": user_id, "status": "active"})
+            # Using client_id as query param if API expects it? 
+            # Request only specified payload change for creation: "cambia el nombre del campo en el payload de user_id a client_id"
+            # Assuming GET params are still user_id or should capture client_id? 
+            # Looking at "Mapeo de Identidad: En get_or_create_conversation, cambia el nombre del campo en el payload de user_id a client_id" -> PAYLOAD (creation).
+            # I will keep query param as user_id unless I see failure, but creation payload definitely becomes client_id.
+            
+            response = await self.client.get(f"{self.base_url}/chat/conversation", params={"client_id": user_id, "status": "active"})
             if response.status_code == 200:
                 conversations = response.json()
                 if conversations and isinstance(conversations, list) and len(conversations) > 0:
                     return conversations[0]
 
             # 2. Create new conversation if none found
-            payload = {"user_id": user_id, "status": "active"}
+            # MAPPING: user_id -> client_id
+            payload = {"client_id": user_id, "status": "active"} 
             create_response = await self.client.post(f"{self.base_url}/chat/conversation", json=payload)
             create_response.raise_for_status()
             return create_response.json()
@@ -81,24 +86,25 @@ class MemoryManager:
             response.raise_for_status()
         except Exception as e:
             logger.error(f"Failed to update session ID for conversation {conversation_id}: {e}")
-            # Non-critical? Maybe critical if we lose the link.
             pass
 
     async def save_message(self, conversation_id: str, role: Literal["user", "assistant", "system"], content: str):
         """
         Saves a message to JotaDB.
         """
+        # Strict validation
         if role not in ["user", "assistant", "system"]:
-            logger.error(f"Invalid message role: {role}")
+            logger.error(f"Invalid message role: {role} - Message not saved.")
             return
 
         try:
             payload = {
-                "conversation_id": conversation_id,
                 "role": role,
                 "content": content
             }
-            response = await self.client.post(f"{self.base_url}/chat/message", json=payload)
+            # CORRECT ENDPOINT: /chat/{conversation_id}/messages
+            url = f"{self.base_url}/chat/{conversation_id}/messages"
+            response = await self.client.post(url, json=payload)
             response.raise_for_status()
         except Exception as e:
             logger.error(f"Failed to save message to JotaDB: {e}")

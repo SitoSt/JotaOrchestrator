@@ -165,9 +165,11 @@ class InferenceClient:
         if params is None:
             params = {"temp": 0.7}
             
+        log_prefix = f"[Conv: {conversation_id}][Sess: {session_id}]"
         response_buffer = []
 
         try:
+            logger.info(f"{log_prefix} Starting inference...")
             if session_id not in self._response_queues:
                 self._response_queues[session_id] = asyncio.Queue()
             
@@ -204,15 +206,24 @@ class InferenceClient:
                 elif op == "end":
                     full_response = "".join(response_buffer)
                     await self.memory_manager.save_message(conversation_id, "assistant", full_response)
+                    logger.info(f"{log_prefix} Inference complete.")
                     break
                 elif op == "error":
                     error_msg = data.get("content")
                     raise Exception(error_msg)
             
         except Exception as e:
-            logger.error(f"Inference error: {e}")
+            logger.error(f"{log_prefix} Inference error: {e}")
+            
+            # Save partial response if buffer has content
+            if response_buffer:
+                logger.info(f"{log_prefix} Saving interrupted response.")
+                partial_response = "".join(response_buffer) + " [INTERRUPTED]"
+                await self.memory_manager.save_message(conversation_id, "assistant", partial_response)
+            
             await self.memory_manager.mark_conversation_error(conversation_id)
             raise e
         finally:
              if session_id in self._response_queues:
                  del self._response_queues[session_id]
+             logger.debug(f"{log_prefix} Cleaned up queue.")

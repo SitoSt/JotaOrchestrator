@@ -32,6 +32,10 @@ async def chat_endpoint(request: ChatRequest):
             session_id = await inference_client.create_session()
             await memory_manager.update_conversation_session(conversation_id, session_id)
 
+        # Contextual Log
+        log_prefix = f"[Conv: {conversation_id}][Sess: {session_id}]"
+        logger.info(f"{log_prefix} Processing REST chat request")
+
         # 3. Save User Message
         await memory_manager.save_message(conversation_id, "user", request.text)
 
@@ -77,11 +81,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
             session_id = await inference_client.create_session()
             await memory_manager.update_conversation_session(conversation_id, session_id)
         
-        logger.info(f"Using conversation {conversation_id} and session {session_id}")
+        log_prefix = f"[Conv: {conversation_id}][Sess: {session_id}]"
+        logger.info(f"{log_prefix} Session ready. Waiting for messages...")
 
         while True:
             data = await websocket.receive_text()
-            logger.info(f"Received via WS from {user_id}: {data}")
+            logger.info(f"{log_prefix} Received via WS: {data}")
             
             # 3. Save User Message
             await memory_manager.save_message(conversation_id, "user", data)
