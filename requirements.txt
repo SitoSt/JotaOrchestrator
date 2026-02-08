@@ -5,3 +5,4 @@ websockets
 redis
 pytest
 pytest-asyncio
+gunicorn

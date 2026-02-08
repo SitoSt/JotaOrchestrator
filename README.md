@@ -63,3 +63,24 @@ Simula múltiples usuarios concurrentes para verificar estabilidad bajo carga.
 ```bash
 pytest tests/stress/test_load.py
 ```
+
+## 🐳 Docker Deployment
+
+Para un despliegue robusto y fácil de gestionar:
+
+1. **Construir y ejecutar**:
+   ```bash
+   docker compose up --build -d
+   ```
+   Esto levantará el servicio en el puerto `8000` con reinicio automático (`unless-stopped`).
+
+2. **Ver logs**:
+   ```bash
+   docker compose logs -f
+   ```
+
+3. **Arquitectura del Contenedor**:
+   - Usa `python:3.12-slim`.
+   - Implementa **Gunicorn** como gestor de procesos y **Uvicorn** workers para máximo rendimiento y estabilidad.
+   - Configurado con `network_mode: "host"` para fácil integración en redes locales.
+

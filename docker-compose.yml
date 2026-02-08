@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  orchestrator:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+    # Usar network_mode: host permite al contenedor acceder a localhost y nombres de red local del host
+    network_mode: "host"
+    restart: unless-stopped

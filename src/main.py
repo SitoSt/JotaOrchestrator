@@ -42,7 +42,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-app.include_router(chat_router, prefix="/api/v1")
+# app.include_router(chat_router, prefix="/api/v1")
+app.include_router(chat_router)
+
 
 @app.get("/")
 async def root():
