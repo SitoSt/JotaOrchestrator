@@ -2,6 +2,7 @@ import asyncio
 import websockets
 import json
 import logging
+import ssl
 from typing import Dict, AsyncGenerator, Any, Optional
 
 from src.core.config import settings
@@ -21,12 +22,15 @@ class InferenceClient:
         self.active_sessions: Dict[str, str] = {}
         
         # Track pending session creation events
-        # key: request_id (or temporary marker), value: asyncio.Future
         self._pending_sessions: Dict[str, asyncio.Future] = {} 
+        
+        # Future to track authentication status during connection
+        self._auth_future: Optional[asyncio.Future] = None
 
     async def connect(self):
         """
         Establishes connection to the Inference Engine and authenticates.
+        Supports automatic SSL/TLS for wss:// URLs.
         """
         try:
             # Connect only if not already connected
@@ -34,22 +38,50 @@ class InferenceClient:
                 return
 
             logger.info(f"Connecting to Inference Engine at {self.url}")
-            self.websocket = await websockets.connect(self.url)
             
-            # 1. Authenticaton
+            # Configure SSL Context if needed
+            ssl_context = None
+            if self.url.startswith("wss://"):
+                ssl_context = ssl.create_default_context()
+                if not settings.SSL_VERIFY:
+                    logger.warning("SSL Verification disabled for InferenceClient")
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+            
+            self.websocket = await websockets.connect(self.url, ssl=ssl_context)
+            
+            # 1. Authenticaton with JotaDB validation
+            self._auth_future = asyncio.Future()
+            
             auth_payload = {
                 "op": "auth",
                 "client_id": self.client_id,
-                "api_key": self.api_key
+                "api_key": self.api_key,
+                "jota_db_url": settings.JOTA_DB_URL
             }
-            await self.websocket.send(json.dumps(auth_payload))
-            logger.info("Sent authentication credentials")
             
-            # Start background listener for unsolicited messages and concurrent request handling.
-            # A reader loop is required to dispatch incoming tokens to the correct session queue
-            # while allowing the 'infer' method to yield results in real-time.
-            self._response_queues: Dict[str, asyncio.Queue] = {}  # session_id -> Queue
+            # Start background listener immediately to capture the response
+            self._response_queues: Dict[str, asyncio.Queue] = {}
             self._reader_task = asyncio.create_task(self._read_loop())
+            
+            await self.websocket.send(json.dumps(auth_payload))
+            logger.info("Sent authentication credentials and validation info")
+            
+            # Wait for auth_success or error
+            try:
+                await asyncio.wait_for(self._auth_future, timeout=10.0)
+                logger.info("Authentication handshake completed successfully")
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.error(f"Authentication failed: {e}")
+                # Ensure we clean up if auth failed
+                if self.websocket:
+                    await self.websocket.close()
+                self.websocket = None
+                if hasattr(self, '_reader_task'):
+                    self._reader_task.cancel()
+                raise ConnectionError(f"Authentication failed: {e}")
+            finally:
+                self._auth_future = None
             
         except Exception as e:
             logger.error(f"Failed to connect to Inference Engine: {e}")
@@ -79,6 +111,20 @@ class InferenceClient:
                         client_id = data.get("client_id")
                         max_sessions = data.get("max_sessions")
                         logger.info(f"Authentication successful - client_id: {client_id}, max_sessions: {max_sessions}")
+                        if self._auth_future and not self._auth_future.done():
+                            self._auth_future.set_result(True)
+                            
+                    elif op == "error":
+                        error_msg = data.get("message")
+                        logger.error(f"Received error from server: {error_msg}")
+                        # If this happens during auth, fail the future
+                        if self._auth_future and not self._auth_future.done():
+                            self._auth_future.set_exception(Exception(error_msg))
+                            return # Exit loop to trigger cleanup
+                        
+                         # Propagate to waiting sessions if applicable
+                        if session_id and session_id in self._response_queues:
+                            await self._response_queues[session_id].put(data)
                         
                     elif op == "session_created":
                         # Handle session creation response.
