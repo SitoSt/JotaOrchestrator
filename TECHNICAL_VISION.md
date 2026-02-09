@@ -27,13 +27,16 @@ El orquestador actúa como un proxy inteligente y gestor de estado:
    - Invoca al cliente de inferencia.
 3. **Cliente de Inferencia (`InferenceClient`)**:
    - Gestiona la conexión WebSocket persistente con el motor C++.
-   - Autentica (`auth`) y crea sesiones (`create_session`) transparentemente.
+   - **Stateless**: Delega el estado de la sesión en `MemoryManager` (JotaDB).
+   - Autentica (`auth`) y crea sesiones (`create_session`) bajo demanda.
    - Despacha streams de tokens concurrentes usando colas asíncronas (`asyncio.Queue`).
+   - Soporta **Exponential Backoff** para reconexión automática.
 4. **Streaming**: Los tokens fluyen en tiempo real de `InferenceCenter` -> `Orchestrator` -> `User` sin bloqueo.
 
-### Gestión de Memoria Unificada
-* **Memoria de Trabajo:** Mantiene el historial de la conversación actual.
-* **Contexto de Sesión:** Mapeo dinámico `user_id` <-> `inference_session_id`.
+### Gestión de Memoria Unificada (JotaDB)
+* **Persistencia Externa:** El orquestador no almacena estado. Todo reside en JotaDB.
+* **Contexto de Sesión:** Mapeo dinámico `conversación_id` <-> `inference_session_id` gestionado por JotaDB.
+* **Deep Health Check:** Monitoreo activo de conexiones a JotaDB y Motor de Inferencia (`/health`).
 
 ---
 
