@@ -12,22 +12,57 @@ logger = logging.getLogger("uvicorn")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    logger.info("Starting up services...")
+    logger.info("=" * 60)
+    logger.info("🚀 INICIANDO JOTA ORCHESTRATOR")
+    logger.info("=" * 60)
     
     # Transcription Service - Disabled until MQTT integration is ready
     # task_transcription = asyncio.create_task(transcription_client.connect_and_listen())
     
-    # Connect to Inference Service (Lazy connection or explicit)
+    # 1. Verify JotaDB Connection with Authentication
+    logger.info("📊 Verificando conexión con JotaDB...")
+    logger.info(f"   └─ URL: {settings.JOTA_DB_URL}")
     try:
-        # connect() now starts a background loop with backoff
-        await inference_client.connect()
+        db_connected = await memory_manager.verify_connection()
+        if db_connected:
+            logger.info("✅ JotaDB: CONECTADO y AUTENTICADO correctamente")
+        else:
+            logger.error("❌ JotaDB: FALLO en la conexión o autenticación")
+            logger.error("   └─ El servicio continuará pero la funcionalidad estará limitada")
     except Exception as e:
-        logger.warning(f"Initial connection to Inference Engine failed (background retry active): {e}")
+        logger.error(f"❌ JotaDB: ERROR al verificar conexión - {e}")
+    
+    logger.info("")  # Línea en blanco para separar
+    
+    # 2. Connect to Inference Service with Authentication
+    logger.info("🧠 Conectando con Inference Engine...")
+    logger.info(f"   └─ URL: {settings.INFERENCE_SERVICE_URL}")
+    logger.info(f"   └─ Orchestrator ID: {settings.ORCHESTRATOR_ID}")
+    try:
+        # Iniciar el loop de conexión
+        await inference_client.connect()
+        
+        # Esperar a que se autentique (con timeout)
+        inference_connected = await inference_client.verify_connection(timeout=10.0)
+        
+        if inference_connected:
+            logger.info("✅ Inference Engine: CONECTADO y AUTENTICADO correctamente")
+        else:
+            logger.warning("⚠️  Inference Engine: Conexión en progreso (reintentando en segundo plano)")
+    except Exception as e:
+        logger.warning(f"⚠️  Inference Engine: Conexión inicial fallida (reintentando en segundo plano) - {e}")
+    
+    logger.info("")  # Línea en blanco
+    logger.info("=" * 60)
+    logger.info("✨ JotaOrchestrator listo para recibir peticiones")
+    logger.info("=" * 60)
 
     yield
     
     # Shutdown
+    logger.info("🛑 Cerrando servicios...")
     await shutdown_services()
+    logger.info("👋 JotaOrchestrator detenido")
     
     # await task_transcription  # Disabled until MQTT is available
 

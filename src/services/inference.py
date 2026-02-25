@@ -11,10 +11,11 @@ from src.core.memory import MemoryManager
 logger = logging.getLogger(__name__)
 
 class InferenceClient:
-    def __init__(self, memory_manager: MemoryManager, url: str = None, client_id: str = None, api_key: str = None):
+    def __init__(self, memory_manager: MemoryManager, url: str = None):
         self.url = url or settings.INFERENCE_SERVICE_URL
-        self.client_id = client_id or settings.INFERENCE_CLIENT_ID
-        self.api_key = api_key or settings.INFERENCE_API_KEY
+        # Usar credenciales del Orchestrator para servicios internos
+        self.client_id = settings.ORCHESTRATOR_ID
+        self.api_key = settings.ORCHESTRATOR_API_KEY
         self.memory_manager = memory_manager
         
         self.websocket = None
@@ -29,6 +30,17 @@ class InferenceClient:
         # Background tasks
         self._connection_task = None
         self._shutdown_event = asyncio.Event()
+
+    @property
+    def is_connected(self) -> bool:
+        """Robustly checks if the websocket is connected."""
+        if not self.websocket:
+            return False
+        if hasattr(self.websocket, 'open'):
+            return self.websocket.open
+        if hasattr(self.websocket, 'state'):
+            return getattr(self.websocket.state, 'name', '') == 'OPEN'
+        return not getattr(self.websocket, 'closed', False)
 
     async def connect(self):
         """
@@ -60,7 +72,32 @@ class InferenceClient:
         """
         Checks if the WebSocket connection is active and authenticated.
         """
-        return self.websocket is not None and self.websocket.open
+        return self.is_connected
+
+    async def verify_connection(self, timeout: float = 10.0) -> bool:
+        """
+        Verifica que la conexión con Inference Engine esté establecida Y autenticada.
+        Espera hasta que la autenticación se complete o hasta timeout.
+        """
+        start_time = asyncio.get_event_loop().time()
+        
+        while (asyncio.get_event_loop().time() - start_time) < timeout:
+            if self.is_connected:
+                # Verificar si ya pasó la autenticación
+                if self._auth_future and self._auth_future.done():
+                     # Si terminó y no lanzó excepción, es True (o el resultado)
+                     try:
+                         if self._auth_future.result():
+                             logger.debug("✅ Inference Engine autenticado correctamente")
+                             return True
+                     except Exception:
+                         pass # Falló la auth
+            
+            # Esperar un poco antes de verificar de nuevo
+            await asyncio.sleep(0.1)
+        
+        logger.error("❌ Timeout esperando autenticación con Inference Engine")
+        return False
 
     async def _connection_loop(self):
         """
@@ -72,47 +109,37 @@ class InferenceClient:
 
         while not self._shutdown_event.is_set():
             try:
-                logger.info(f"Connecting to Message Engine at {self.url}")
+                logger.info(f"🔌 Intentando conectar con Inference Engine: {self.url}")
                 
                 # Configure SSL Context if needed (HEAD logic)
                 ssl_context = None
                 if self.url.startswith("wss://"):
                     ssl_context = ssl.create_default_context()
                     if not settings.SSL_VERIFY:
-                        logger.warning("SSL Verification disabled for InferenceClient")
+                        logger.warning("⚠️  SSL Verification deshabilitada para InferenceClient")
                         ssl_context.check_hostname = False
                         ssl_context.verify_mode = ssl.CERT_NONE
                 
-                async with websockets.connect(self.url, ssl=ssl_context) as websocket:
+                # Headers para autenticación
+                additional_headers = {
+                    "X-Client-ID": self.client_id,
+                    "X-API-Key": self.api_key
+                }
+                
+                logger.info(f"Connecting to {self.url} with Client ID: {self.client_id}")
+                
+                async with websockets.connect(self.url, ssl=ssl_context, additional_headers=additional_headers) as websocket:
                     self.websocket = websocket
                     backoff_delay = 1 # Reset backoff on successful connection
+                    logger.info("✅ WebSocket conectado y autenticado por headers")
                     
-                    # Authenticate (HEAD logic + Remote flow)
+                    # Marcar como autenticado inmediatamente ya que la conexión fue aceptada
+                    # Si la autenticación falla, el servidor cerrará la conexión (Handshake failure)
                     self._auth_future = asyncio.Future()
+                    self._auth_future.set_result(True)
                     
-                    auth_payload = {
-                        "op": "auth",
-                        "client_id": self.client_id,
-                        "api_key": self.api_key,
-                        "jota_db_url": settings.JOTA_DB_URL
-                    }
-                    
-                    # Start read loop as a task so we can wait for auth
-                    read_task = asyncio.create_task(self._read_loop())
-                    
-                    await websocket.send(json.dumps(auth_payload))
-                    logger.info("Sent authentication credentials. Waiting for confirmation...")
-                    
-                    # Wait for Auth Success (HEAD logic)
-                    try:
-                        await asyncio.wait_for(self._auth_future, timeout=10.0)
-                        logger.info("Authenticated with Inference Engine")
-                    except (asyncio.TimeoutError, Exception) as e:
-                        logger.error(f"Authentication failed: {e}")
-                        read_task.cancel()
-                        raise # Trigger retry loop
-                    finally:
-                         self._auth_future = None
+                    # Start read loop
+                    await self._read_loop()
                     
                     # Run read loop while connected (await the task)
                     try:
@@ -173,12 +200,18 @@ class InferenceClient:
                     elif op == "session_created":
                         if self._session_creation_future and not self._session_creation_future.done():
                             self._session_creation_future.set_result(session_id)
+                            
+                    elif op == "session_error":
+                        error_msg = data.get("error", "Unknown session error")
+                        logger.error(f"Session Error: {error_msg}")
+                        if self._session_creation_future and not self._session_creation_future.done():
+                            self._session_creation_future.set_exception(Exception(error_msg))
                     
                     elif session_id and session_id in self._response_queues:
                         await self._response_queues[session_id].put(data)
                         
-                    elif op in ["hello", "auth_success"]:
-                        pass # Handled above
+                    elif op in ["hello", "auth_success", "abort", "end"]:
+                        pass # Handled above or safely ignored after queue deletion
                         
                     else:
                         logger.warning(f"Unhandled message: {op}")
@@ -193,7 +226,7 @@ class InferenceClient:
         """
         Requests a new session ID from the engine.
         """
-        if not self.websocket or not self.websocket.open:
+        if not self.is_connected:
             raise Exception("Inference Engine not connected")
 
         async with self.lock:
@@ -208,7 +241,7 @@ class InferenceClient:
         """
         Sends abort signal for a specific session.
         """
-        if self.websocket and self.websocket.open:
+        if self.is_connected:
              try:
                  await self.websocket.send(json.dumps({
                      "op": "abort",
@@ -218,7 +251,7 @@ class InferenceClient:
              except Exception as e:
                  logger.error(f"Failed to abort session {session_id}: {e}")
 
-    async def infer(self, session_id: str, prompt: str, conversation_id: str, params: Optional[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
+    async def infer(self, session_id: str, prompt: str, conversation_id: str, params: Optional[Dict[str, Any]] = None, client_id: int = None) -> AsyncGenerator[str, None]:
         # Using Remote's robust implementation
         if params is None:
             params = {"temp": 0.7}
@@ -238,7 +271,7 @@ class InferenceClient:
                 "params": params
             }
             
-            if not self.websocket or not self.websocket.open:
+            if not self.is_connected:
                  raise Exception("Inference Engine Unavailable")
 
             await self.websocket.send(json.dumps(request))
@@ -262,7 +295,7 @@ class InferenceClient:
                     yield content
                 elif op == "end":
                     full_response = "".join(response_buffer)
-                    await self.memory_manager.save_message(conversation_id, "assistant", full_response)
+                    await self.memory_manager.save_message(conversation_id, "assistant", full_response, client_id)
                     logger.info(f"{log_prefix} Inference complete.")
                     break
                 elif op == "error":
@@ -275,7 +308,7 @@ class InferenceClient:
             if response_buffer:
                 logger.info(f"{log_prefix} Saving interrupted response.")
                 partial_response = "".join(response_buffer) + " [INTERRUPTED]"
-                await self.memory_manager.save_message(conversation_id, "assistant", partial_response)
+                await self.memory_manager.save_message(conversation_id, "assistant", partial_response, client_id)
             
             await self.memory_manager.mark_conversation_error(conversation_id)
             raise e

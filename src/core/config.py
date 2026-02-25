@@ -1,3 +1,4 @@
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -5,16 +6,17 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     DEBUG: bool = False
     
-    REDIS_URL: str
     TRANSCRIPTION_SERVICE_URL: str
     
     INFERENCE_SERVICE_URL: str
-    INFERENCE_CLIENT_ID: str
-    INFERENCE_API_KEY: str
+    
+    # Internal Services Authentication
+    ORCHESTRATOR_ID: str  # ID del Orchestrator para servicios internos
+    ORCHESTRATOR_API_KEY: str  # API Key del Orchestrator para servicios internos
     
     # JotaDB Integration
     JOTA_DB_URL: str
-    JOTA_DB_API_KEY: str
+    JOTA_DB_SK: str  # Server Key - sent as Bearer token for DB access
     
     # SSL/TLS & Validation
     SSL_VERIFY: bool = True
