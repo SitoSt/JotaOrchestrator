@@ -53,6 +53,7 @@ async def get_conversation_messages(
 class ChatRequest(BaseModel):
     text: str
     user_id: str = "api_user"
+    model_id: str = None  # Optional: model to use for this conversation
 
 @router.post("/chat")
 async def chat_endpoint(
@@ -71,7 +72,9 @@ async def chat_endpoint(
 
     try:
         # 2. Conversation Management
-        conversation = await memory_manager.create_conversation(request.user_id, client_id=client_id)
+        conversation = await memory_manager.create_conversation(
+            request.user_id, client_id=client_id, model_id=request.model_id
+        )
         conversation_id = conversation["id"]
 
         # 3. Ephemeral Session (aborts previous if exists)
@@ -99,6 +102,7 @@ async def chat_endpoint(
             "conversation_id": conversation_id,
             "user_id": request.user_id,
             "client_id": client_id,
+            "model_id": request.model_id,
             "source": "api"
         }
         
@@ -138,8 +142,11 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
     try:
         # 2. Conversation Management
         conversation_id = websocket.query_params.get("conversation_id")
+        model_id = websocket.query_params.get("model_id") or None
         if not conversation_id:
-            conversation = await memory_manager.create_conversation(user_id, client_id=client_id)
+            conversation = await memory_manager.create_conversation(
+                user_id, client_id=client_id, model_id=model_id
+            )
             conversation_id = conversation["id"]
 
         # 3. Ephemeral Session (aborts previous if exists)
@@ -171,6 +178,7 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
                 "conversation_id": conversation_id,
                 "user_id": user_id,
                 "client_id": client_id,
+                "model_id": model_id,
                 "source": "websocket"
             }
             

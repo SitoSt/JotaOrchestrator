@@ -122,9 +122,10 @@ class MemoryManager:
             logger.error(f"Error validating client key: {e}")
             return False
 
-    async def create_conversation(self, user_id: str, client_id: int) -> Dict[str, Any]:
+    async def create_conversation(self, user_id: str, client_id: int, model_id: Optional[str] = None) -> Dict[str, Any]:
         """
-
+        Creates a new conversation in JotaDB.
+        Optionally links it to a specific model via model_id.
         Returns the conversation object (dict).
         """
         try:
@@ -133,22 +134,65 @@ class MemoryManager:
                 "X-API-Key": settings.ORCHESTRATOR_API_KEY,
                 "X-Client-ID": str(client_id)
             }
-            
-            # response = await self.client.get(f"{self.base_url}/chat/conversations", params={"client_id": user_id, "status": "active"}, headers=service_headers)
-            # if response.status_code == 200:
-            #     conversations = response.json()
-            #     if conversations and isinstance(conversations, list) and len(conversations) > 0:
-            #         return conversations[0]
 
-            # 2. Create new conversation if none found
-            payload = {"client_id": user_id, "status": "active"} 
-            create_response = await self.client.post(f"{self.base_url}/chat/conversations", json=payload, headers=service_headers)
+            payload: Dict[str, Any] = {"client_id": user_id, "status": "active"}
+            if model_id:
+                payload["model_id"] = model_id
+
+            create_response = await self.client.post(
+                f"{self.base_url}/chat/conversations",
+                json=payload,
+                headers=service_headers,
+            )
             create_response.raise_for_status()
             return create_response.json()
 
         except Exception as e:
             logger.error(f"Error managing conversation for user {user_id}: {e}")
             raise e
+
+    async def get_conversation(self, conversation_id: str, client_id: Any) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves a single conversation object from JotaDB.
+        Returns the dict (including model_id if set) or None on failure.
+        """
+        try:
+            service_headers = {
+                **self.base_headers,
+                "X-API-Key": settings.ORCHESTRATOR_API_KEY,
+                "X-Client-ID": str(client_id),
+            }
+            response = await self.client.get(
+                f"{self.base_url}/chat/conversations/{conversation_id}",
+                headers=service_headers,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Failed to get conversation {conversation_id}: {e}")
+            return None
+
+    async def set_conversation_model(self, conversation_id: str, client_id: Any, model_id: str) -> bool:
+        """
+        Updates the model_id linked to a conversation via PATCH.
+        Returns True on success, False on failure.
+        """
+        try:
+            service_headers = {
+                **self.base_headers,
+                "X-API-Key": settings.ORCHESTRATOR_API_KEY,
+                "X-Client-ID": str(client_id),
+            }
+            response = await self.client.patch(
+                f"{self.base_url}/chat/conversations/{conversation_id}",
+                json={"model_id": model_id},
+                headers=service_headers,
+            )
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set model for conversation {conversation_id}: {e}")
+            return False
 
     async def get_conversation_messages(self, conversation_id: str, client_id: Any, limit: int = 50) -> list:
         """

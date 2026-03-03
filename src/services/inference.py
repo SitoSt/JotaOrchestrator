@@ -60,6 +60,8 @@ class InferenceClient:
         self._auth_future: Optional[asyncio.Future] = None
         # Futures para comandos de gestión de modelos: {command_key -> Future}
         self._pending_commands: Dict[str, asyncio.Future] = {}
+        # Modelo actualmente cargado en el InferenceCenter (None = desconocido)
+        self._active_model_id: Optional[str] = None
 
         # Background tasks
         self._connection_task = None
@@ -382,20 +384,26 @@ class InferenceClient:
         return await asyncio.wait_for(future, timeout=10.0)
 
     async def load_model(self, model_id: str) -> bool:
-        """Solicita la carga de un modelo específico."""
+        """Solicita la carga de un modelo específico y actualiza el estado local."""
         if not self.is_connected:
             raise Exception("Inference Engine no conectado")
-        
+
         future = asyncio.Future()
         self._pending_commands["load_model"] = future
-        
+
         await self.websocket.send(json.dumps({
-            "op": "COMMAND_LOAD_MODEL", 
+            "op": "COMMAND_LOAD_MODEL",
             "model_id": model_id
         }))
-        
+
         result = await asyncio.wait_for(future, timeout=30.0)
-        return result.get("status") == "SUCCESS"
+        success = result.get("status") == "SUCCESS"
+        if success:
+            self._active_model_id = model_id
+            logger.info(f"✅ Model loaded and tracked: {model_id}")
+        else:
+            logger.error(f"❌ Failed to load model {model_id}: {result}")
+        return success
     
     async def infer(
         self,

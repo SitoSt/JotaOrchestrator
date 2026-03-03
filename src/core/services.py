@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 # Instantiate Singleton Services
 memory_manager = MemoryManager()
 inference_client = InferenceClient(memory_manager=memory_manager)
-jota_controller = JotaController(inference_client=inference_client)
+jota_controller = JotaController(inference_client=inference_client, memory_manager=memory_manager)
 
 async def shutdown_services():
     """
