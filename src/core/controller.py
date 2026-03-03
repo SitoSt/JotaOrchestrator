@@ -9,6 +9,7 @@ Responsabilidades:
   - Delegar el streaming de tokens al InferenceClient.
   - Actuar como suscriptor del event_bus para procesamiento desacoplado.
 """
+import asyncio
 import logging
 from typing import AsyncGenerator, TYPE_CHECKING
 
@@ -19,6 +20,9 @@ if TYPE_CHECKING:
     from src.core.memory import MemoryManager
 
 logger = logging.getLogger(__name__)
+
+_LOAD_MAX_RETRIES = 3
+_LOAD_BASE_DELAY = 1.0  # segundos
 
 
 class JotaController:
@@ -49,12 +53,13 @@ class JotaController:
 
         Lógica de atomicidad:
           - Solo se actualiza el model_id en DB si el Engine confirma SUCCESS.
-          - Si el Engine responde ERROR_MODEL_NOT_FOUND, se lanza ModelNotFoundError.
-          - Si la conversación no tiene model_id, no se fuerza ningún cambio.
+          - Valida existencia del modelo en la lista del Engine antes de intentar cargarlo.
+          - Si el Engine responde ERROR_INFERENCE_IN_PROGRESS, reintenta con
+            backoff exponencial (máx 3 intentos).
 
         Raises:
-            ModelNotFoundError: Si el modelo no existe en el Engine.
-            InferenceEngineBusyError: Si el Engine está ocupado con otra inferencia.
+            ModelNotFoundError: Si el modelo no existe en el catálogo del Engine.
+            InferenceEngineBusyError: Si el Engine sigue ocupado tras todos los reintentos.
             RuntimeError: Si la carga falla por razón desconocida.
         """
         conversation = await self.memory_manager.get_conversation(conversation_id, client_id)
@@ -67,22 +72,51 @@ class JotaController:
             logger.debug(f"Conversation {conversation_id} has no model_id set. Skipping model check.")
             return
 
-        active_model = self.inference_client.current_engine_model
-        if active_model == required_model:
+        if self.inference_client.current_engine_model == required_model:
             logger.debug(f"Model '{required_model}' already active. No switch needed.")
             return
 
-        logger.info(f"⚙️  Model mismatch: active='{active_model}' required='{required_model}'. Loading...")
+        # — Validación de existencia pre-carga (falla rápida) —
+        try:
+            available = await self.inference_client.list_models()
+            if isinstance(available, list) and available:
+                ids = [m.get("id") or m.get("model_id") or m for m in available]
+                if required_model not in ids:
+                    logger.error(f"Model '{required_model}' not in Engine catalog: {ids}")
+                    raise ModelNotFoundError(f"Model '{required_model}' not found in Engine catalog")
+        except ModelNotFoundError:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not validate model catalog (proceeding anyway): {e}")
 
-        # Puede lanzar InferenceEngineBusyError o ModelNotFoundError — se propagan al llamador
-        success = await self.inference_client.load_model(required_model)
+        # — Carga con backoff exponencial —
+        logger.info(f"⚙️  Model mismatch: active='{self.inference_client.current_engine_model}' "
+                    f"required='{required_model}'. Loading...")
+
+        delay = _LOAD_BASE_DELAY
+        for attempt in range(1, _LOAD_MAX_RETRIES + 1):
+            try:
+                success = await self.inference_client.load_model(required_model)
+                break  # sal del loop si no hubo excepción
+            except InferenceEngineBusyError:
+                if attempt == _LOAD_MAX_RETRIES:
+                    logger.error(f"Engine busy after {_LOAD_MAX_RETRIES} retries. Giving up.")
+                    raise
+                logger.warning(f"Engine busy (attempt {attempt}/{_LOAD_MAX_RETRIES}). "
+                               f"Retrying in {delay:.0f}s...")
+                await asyncio.sleep(delay)
+                delay *= 2
+        else:
+            success = False
 
         if success:
             # Atomicidad: solo persistir en DB tras confirmación del Engine
             await self.memory_manager.set_conversation_model(conversation_id, client_id, required_model)
             logger.info(f"✅ DB updated: conversation {conversation_id} now uses model '{required_model}'")
         else:
-            raise RuntimeError(f"Failed to load required model '{required_model}' for conversation {conversation_id}")
+            raise RuntimeError(
+                f"Failed to load required model '{required_model}' for conversation {conversation_id}"
+            )
 
     async def handle_input(self, payload: dict) -> AsyncGenerator[str, None]:
         """

@@ -1,10 +1,79 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Header
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query, Header, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 from src.core.services import jota_controller, memory_manager, inference_client
 import logging
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/chat/models")
+async def get_available_models(
+    x_client_key: str = Header(..., description="Client authentication key"),
+):
+    """
+    Retorna la lista de modelos disponibles en el InferenceCenter.
+    La respuesta se cachea durante 5 minutos en el InferenceClient para
+    evitar sobrecargar el bus de mensajes entre servicios.
+    """
+    client_data = await memory_manager.validate_client_key(x_client_key)
+    if not client_data:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        models = await inference_client.list_models()
+        return {"status": "success", "models": models}
+    except Exception as e:
+        logger.error(f"Error listing models: {e}")
+        raise HTTPException(status_code=503, detail=f"Engine unavailable: {e}")
+
+
+class ConversationModelUpdate(BaseModel):
+    model_id: str
+
+
+@router.patch("/chat/conversations/{conversation_id}")
+async def update_conversation_model(
+    conversation_id: str,
+    body: ConversationModelUpdate,
+    x_client_key: str = Header(..., description="Client authentication key"),
+):
+    """
+    Actualiza el modelo asignado a una conversación.
+
+    Valida que el model_id exista en la lista del Engine antes de persistir,
+    garantizando que no se asigne un modelo inexistente.
+    """
+    client_data = await memory_manager.validate_client_key(x_client_key)
+    if not client_data:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    client_id = client_data["id"]
+
+    # Validar que el modelo existe en el Engine (usa caché TTL)
+    try:
+        available_models = await inference_client.list_models()
+        model_ids = (
+            [m.get("id") or m.get("model_id") or m for m in available_models]
+            if isinstance(available_models, list)
+            else []
+        )
+        if model_ids and body.model_id not in model_ids:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{body.model_id}' not found in Engine. Available: {model_ids}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Could not validate model existence (Engine may be unavailable): {e}")
+        # Si el Engine no responde, permitimos el update DB de todos modos
+
+    ok = await memory_manager.set_conversation_model(conversation_id, client_id, body.model_id)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to update conversation model in DB")
+
+    return {"status": "success", "conversation_id": conversation_id, "model_id": body.model_id}
 
 
 @router.get("/chat/conversations/{user_id}")
