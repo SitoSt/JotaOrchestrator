@@ -237,36 +237,46 @@ class MemoryManager:
             logger.error(f"Failed to get conversations for user {user_id}: {e}")
             return []
 
-    async def save_message(self, conversation_id: str, user_id: str, role: Literal["user", "assistant", "system"], content: str, client_id: Any):
+    async def save_message(
+        self,
+        conversation_id: str,
+        user_id: str,
+        role: Literal["user", "assistant", "system"],
+        content: str,
+        client_id: Any,
+        metadata: Optional[Dict] = None,
+    ):
         """
         Saves a message to JotaDB.
+
+        Args:
+            metadata: Datos adicionales a persistir con el mensaje, por ejemplo
+                      {"model_id": "llama3-8b"} para trazabilidad del modelo generador.
         """
-        # Strict validation
         if role not in ["user", "assistant", "system"]:
             logger.error(f"Invalid message role: {role} - Message not saved.")
             return
 
         try:
-            payload = {
-                "role": role,
-                "content": content
-            }
+            payload: Dict[str, Any] = {"role": role, "content": content}
+            if metadata:
+                payload["metadata"] = metadata
+
             service_headers = {
                 **self.base_headers,
                 "X-API-Key": settings.ORCHESTRATOR_API_KEY,
                 "X-Client-ID": str(client_id)
             }
-            
-            # CORRECT ENDPOINT: /chat/{conversation_id}/messages
+
             url = f"{self.base_url}/chat/{conversation_id}/messages"
-            
             response = await self.client.post(url, json=payload, headers=service_headers)
-            
+
             if response.status_code == 422:
-                 logger.error(f"422 Error on POST /chat/{conversation_id}/messages: {response.text}")
+                logger.error(f"422 Error on POST /chat/{conversation_id}/messages: {response.text}")
             response.raise_for_status()
         except Exception as e:
             logger.error(f"Failed to save message to JotaDB: {e}")
+
 
     async def mark_conversation_error(self, conversation_id: str, client_id: Any):
          """

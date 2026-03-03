@@ -31,6 +31,19 @@ from src.core.memory import MemoryManager
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Custom Exceptions
+# ---------------------------------------------------------------------------
+
+class InferenceEngineBusyError(Exception):
+    """El Engine rechazó el comando porque hay una inferencia en progreso."""
+
+
+class ModelNotFoundError(Exception):
+    """El Engine no encontró el modelo solicitado."""
+
+
 class InferenceClient:
     """
     Cliente WebSocket que mantiene una conexión persistente con el InferenceCenter.
@@ -62,6 +75,8 @@ class InferenceClient:
         self._pending_commands: Dict[str, asyncio.Future] = {}
         # Modelo actualmente cargado en el InferenceCenter (None = desconocido)
         self._active_model_id: Optional[str] = None
+        # Lock para serializar cargas de modelo (evita race conditions en el Engine)
+        self._model_load_lock: asyncio.Lock = asyncio.Lock()
 
         # Background tasks
         self._connection_task = None
@@ -215,11 +230,31 @@ class InferenceClient:
     async def _handle_error(self, data: dict, session_id: str | None) -> None:
         error_msg = data.get("message", "Unknown error")
         logger.error(f"Server Error: {error_msg}")
+
+        # Mapear mensajes de error del Engine a excepciones tipadas
+        if error_msg == "ERROR_INFERENCE_IN_PROGRESS":
+            exc: Exception = InferenceEngineBusyError(error_msg)
+        elif error_msg == "ERROR_MODEL_NOT_FOUND":
+            exc = ModelNotFoundError(error_msg)
+        else:
+            exc = Exception(error_msg)
+
+        # Prioridad 1: error durante autenticación
         if self._auth_future and not self._auth_future.done():
-            self._auth_future.set_exception(Exception(error_msg))
+            self._auth_future.set_exception(exc)
             return
+
+        # Prioridad 2: error en respuesta a un comando pendiente (load/list models)
+        for future in self._pending_commands.values():
+            if not future.done():
+                future.set_exception(exc)
+                return
+
+        # Prioridad 3: error dentro de una sesión de inferencia en curso
         if session_id and session_id in self._response_queues:
             await self._response_queues[session_id].put(data)
+        else:
+            logger.warning(f"Unrouted error: {error_msg} (session_id={session_id!r})")
 
     async def _handle_session_created(self, data: dict, session_id: str | None) -> None:
         if self._session_creation_future and not self._session_creation_future.done():
@@ -384,27 +419,37 @@ class InferenceClient:
         return await asyncio.wait_for(future, timeout=10.0)
 
     async def load_model(self, model_id: str) -> bool:
-        """Solicita la carga de un modelo específico y actualiza el estado local."""
+        """Solicita la carga de un modelo específico y actualiza el estado local.
+
+        Utiliza _model_load_lock para serializar cargas concurrentes: si dos coroutines
+        intentan cargar un modelo al mismo tiempo, la segunda esperará a que termine
+        la primera, evitando conflictos de estado en el Engine.
+
+        Raises:
+            InferenceEngineBusyError: Si el Engine rechaza por inferencia en progreso.
+            ModelNotFoundError: Si el modelo no existe en el Engine.
+        """
         if not self.is_connected:
             raise Exception("Inference Engine no conectado")
 
-        future = asyncio.Future()
-        self._pending_commands["load_model"] = future
+        async with self._model_load_lock:
+            future = asyncio.Future()
+            self._pending_commands["load_model"] = future
 
-        await self.websocket.send(json.dumps({
-            "op": "COMMAND_LOAD_MODEL",
-            "model_id": model_id
-        }))
+            await self.websocket.send(json.dumps({
+                "op": "COMMAND_LOAD_MODEL",
+                "model_id": model_id
+            }))
 
-        result = await asyncio.wait_for(future, timeout=30.0)
-        success = result.get("status") == "SUCCESS"
-        if success:
-            self._active_model_id = model_id
-            logger.info(f"✅ Model loaded and tracked: {model_id}")
-        else:
-            logger.error(f"❌ Failed to load model {model_id}: {result}")
-        return success
-    
+            result = await asyncio.wait_for(future, timeout=30.0)
+            success = result.get("status") == "SUCCESS"
+            if success:
+                self._active_model_id = model_id
+                logger.info(f"✅ Model loaded and tracked: {model_id}")
+            else:
+                logger.error(f"❌ Failed to load model {model_id}: {result}")
+            return success
+
     async def infer(
         self,
         session_id: str,
@@ -413,14 +458,20 @@ class InferenceClient:
         user_id: str,
         params: Optional[Dict[str, Any]] = None,
         client_id: int = None,
+        model_id: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Envía un prompt al InferenceCenter y hace streaming de los tokens de respuesta.
 
+        Args:
+            model_id: Modelo que generará la respuesta. Se persiste en los metadatos
+                      del mensaje resultante para trazabilidad completa.
+
         Yields:
             str: Fragmentos de texto del modelo conforme llegan (op='token').
 
-        El mensaje completo se persiste en MemoryManager al recibir op='end'.
+        El mensaje completo se persiste en MemoryManager al recibir op='end',
+        incluyendo metadata con el model_id para trazabilidad.
         Si la inferencia es interrumpida, guarda la respuesta parcial con '[INTERRUPTED]'.
 
         Raises:
@@ -470,13 +521,14 @@ class InferenceClient:
                 elif op == "end":
                     full_response = "".join(response_buffer)
                     await self.memory_manager.save_message(
-                        conversation_id=conversation_id, 
+                        conversation_id=conversation_id,
                         user_id=user_id,
-                        role="assistant", 
-                        content=full_response, 
-                        client_id=client_id
+                        role="assistant",
+                        content=full_response,
+                        client_id=client_id,
+                        metadata={"model_id": model_id} if model_id else None,
                     )
-                    logger.info(f"{log_prefix} Inference complete.")
+                    logger.info(f"{log_prefix} Inference complete (model={model_id!r}).")
                     break
                 elif op == "error":
                     error_msg = data.get("content")
@@ -489,11 +541,12 @@ class InferenceClient:
                 logger.info(f"{log_prefix} Saving interrupted response.")
                 partial_response = "".join(response_buffer) + " [INTERRUPTED]"
                 await self.memory_manager.save_message(
-                    conversation_id=conversation_id, 
-                    user_id=user_id, 
-                    role="assistant", 
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    role="assistant",
                     content=partial_response,
-                    client_id=client_id
+                    client_id=client_id,
+                    metadata={"model_id": model_id, "interrupted": True} if model_id else {"interrupted": True},
                 )
             
             await self.memory_manager.mark_conversation_error(conversation_id, user_id)
