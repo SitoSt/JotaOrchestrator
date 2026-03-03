@@ -25,10 +25,11 @@ import websockets
 import json
 import logging
 import ssl
-from typing import Dict, AsyncGenerator, Any, Optional, List
+from typing import Dict, AsyncGenerator, Any, Optional, List, Union
 
 from src.core.config import settings
 from src.core.memory import MemoryManager
+from src.core.tool_manager import tool_manager
 
 logger = logging.getLogger(__name__)
 
@@ -497,7 +498,7 @@ class InferenceClient:
         params: Optional[Dict[str, Any]] = None,
         client_id: int = None,
         model_id: Optional[str] = None,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[Any, None]:
         """
         Envía un prompt al InferenceCenter y hace streaming de los tokens de respuesta.
 
@@ -518,8 +519,13 @@ class InferenceClient:
         if params is None:
             params = {"temp": 0.7}
             
+        grammar = tool_manager.generate_gbnf_grammar()
+        if grammar and "grammar" not in params:
+            params["grammar"] = grammar
+            
         log_prefix = f"[Conv: {conversation_id}][Sess: {session_id}]"
         response_buffer = []
+        yielded_len = 0
 
         try:
             logger.info(f"{log_prefix} Starting inference...")
@@ -555,9 +561,51 @@ class InferenceClient:
                 if op == "token":
                     content = data.get("content", "")
                     response_buffer.append(content)
-                    yield content
+                    full_text = "".join(response_buffer)
+                    
+                    tool_call_marker = "<tool_call>"
+                    tool_end_marker = "</tool_call>"
+                    
+                    if tool_call_marker in full_text:
+                        start_idx = full_text.find(tool_call_marker)
+                        if start_idx > yielded_len:
+                            chunk = full_text[yielded_len:start_idx]
+                            yielded_len += len(chunk)
+                            yield chunk
+                            
+                        # Check if closed
+                        if tool_end_marker in full_text[start_idx:]:
+                            end_idx = full_text.find(tool_end_marker, start_idx) + len(tool_end_marker)
+                            tool_call_str = full_text[start_idx:end_idx]
+                            
+                            # Only parse if we haven't yielded this tool call yet
+                            if end_idx > yielded_len:
+                                yielded_len = end_idx
+                                json_str = tool_call_str[len(tool_call_marker):-len(tool_end_marker)].strip()
+                                try:
+                                    import json
+                                    tool_call_data = json.loads(json_str)
+                                    yield {"type": "tool_call", "payload": tool_call_data}
+                                except Exception as e:
+                                    logger.error(f"Failed to parse tool JSON: {e}")
+                                    yield f"\n[Error parsing tool call: {e}]\n"
+                    else:
+                        safe_to_yield = full_text
+                        last_lt = full_text.rfind("<")
+                        if last_lt != -1 and last_lt >= len(full_text) - len(tool_call_marker):
+                            if tool_call_marker.startswith(full_text[last_lt:]):
+                                safe_to_yield = full_text[:last_lt]
+                                
+                        if len(safe_to_yield) > yielded_len:
+                            chunk = safe_to_yield[yielded_len:]
+                            yielded_len += len(chunk)
+                            yield chunk
+
                 elif op == "end":
-                    full_response = "".join(response_buffer)
+                    full_text = "".join(response_buffer)
+                    if len(full_text) > yielded_len:
+                        yield full_text[yielded_len:]
+                        
                     await self.memory_manager.save_message(
                         conversation_id=conversation_id,
                         user_id=user_id,

@@ -178,6 +178,9 @@ async def chat_endpoint(
         
         full_response = ""
         async for token in jota_controller.handle_input(event):
+            if isinstance(token, dict):
+                # Status messages are not relevant for REST responses
+                continue
             full_response += token
             
         return {"status": "success", "response": full_response}
@@ -325,7 +328,12 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
 
             # 6. Stream tokens back
             async for token in jota_controller.handle_input(payload):
-                await websocket.send_text(token)
+                if isinstance(token, dict):
+                    # Structured control message (e.g. status indicator)
+                    await websocket.send_text(_json.dumps(token))
+                else:
+                    # Plain text content token
+                    await websocket.send_text(_json.dumps({"type": "token", "content": token}))
             
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for user {user_id}")

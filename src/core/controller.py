@@ -198,22 +198,122 @@ class JotaController:
 
             # Usar el modelo activo real (puede haber sido actualizado por _ensure_model_loaded)
             effective_model = self.inference_client.current_engine_model or model_id
+            
+            from src.core.tool_manager import tool_manager
+            import time as _time
+            import json as _json
+            tool_instructions = tool_manager.get_system_prompt_addition()
+            
+            full_prompt = content
+            if tool_instructions:
+                full_prompt = f"[SYSTEM INSTRUCTIONS]\n{tool_instructions}\n[/SYSTEM INSTRUCTIONS]\n\nUser: {content}"
 
             logger.info(
                 f"[TRACE][Conv: {conversation_id}] Calling infer \u2014 "
                 f"effective_model={effective_model!r} "
                 f"engine_current={self.inference_client.current_engine_model!r}"
             )
+            
+            tool_executed = False
+            pre_tool_thinking = []   # Buffer for text emitted BEFORE the tool call
+            
             async for token in self.inference_client.infer(
                 session_id=session_id,
-                prompt=content,
+                prompt=full_prompt,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 params=None,
                 client_id=client_id,
                 model_id=effective_model,
             ):
-                yield token
+                if isinstance(token, dict) and token.get("type") == "tool_call":
+                    tc_payload = token.get("payload", {})
+                    tool_name = tc_payload.get("name")
+                    tool_args = tc_payload.get("arguments", {})
+                    
+                    # Save the model's pre-tool thinking to the DB for traceability,
+                    # but DO NOT yield it to the user.
+                    if pre_tool_thinking:
+                        thinking_text = "".join(pre_tool_thinking)
+                        await self.memory_manager.save_message(
+                            conversation_id=conversation_id,
+                            user_id=user_id,
+                            role="assistant",
+                            content=thinking_text,
+                            client_id=client_id,
+                            metadata={"model_id": effective_model, "thinking": True},
+                        )
+                        pre_tool_thinking.clear()
+                    
+                    # Emit structured status tokens
+                    yield {"type": "status", "content": f"Buscando información usando {tool_name}..."}
+                    
+                    try:
+                        start_t = _time.time()
+                        result = await tool_manager.execute_tool(tool_name, **tool_args)
+                        duration = f"{_time.time() - start_t:.2f}s"
+                        
+                        result_str = result if isinstance(result, str) else _json.dumps(result)
+                        
+                        await self.memory_manager.save_message(
+                            conversation_id=conversation_id,
+                            user_id=user_id,
+                            role="tool",
+                            content=result_str,
+                            client_id=client_id,
+                            metadata={"tool_name": tool_name, "execution_time": duration},
+                        )
+                        yield {"type": "status", "content": f"Búsqueda completada en {duration}. Generando respuesta..."}
+                        tool_executed = True
+                    except Exception as e:
+                        logger.error(f"Tool execution failed: {e}")
+                        await self.memory_manager.save_message(
+                            conversation_id=conversation_id,
+                            user_id=user_id,
+                            role="tool",
+                            content=f"Error executing tool {tool_name}: {e}",
+                            client_id=client_id,
+                            metadata={"tool_name": tool_name, "error": True},
+                        )
+                        yield {"type": "status", "content": f"Error al ejecutar {tool_name}: {e}"}
+                        tool_executed = True
+                else:
+                    # If no tool call has been triggered yet, buffer as "thinking"
+                    if not tool_executed:
+                        pre_tool_thinking.append(token)
+                    else:
+                        yield token
+                    
+            # If model responded without any tool call, yield all buffered text normally
+            if not tool_executed and pre_tool_thinking:
+                for chunk in pre_tool_thinking:
+                    yield chunk
+                    
+            if tool_executed:
+                logger.info(f"Tool executed, starting RE-INFERENCE for session {session_id}")
+                yield {"type": "status", "content": "Analizando resultados..."}
+                
+                # Reload context
+                context = await self.memory_manager.get_conversation_messages(conversation_id, client_id)
+                await self.inference_client.set_context(session_id, context)
+                
+                followup_prompt = "The tool has provided the results. Please answer the original user query using this information."
+                if tool_instructions:
+                    followup_prompt = f"[SYSTEM INSTRUCTIONS]\n{tool_instructions}\n[/SYSTEM INSTRUCTIONS]\n\n{followup_prompt}"
+                    
+                async for token in self.inference_client.infer(
+                    session_id=session_id,
+                    prompt=followup_prompt,
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    params=None,
+                    client_id=client_id,
+                    model_id=effective_model,
+                ):
+                    if isinstance(token, dict) and token.get("type") == "tool_call":
+                        logger.warning("Nested tool call attempted, ignoring.")
+                    else:
+                        yield token
 
             logger.info("Inference stream complete.")
 
