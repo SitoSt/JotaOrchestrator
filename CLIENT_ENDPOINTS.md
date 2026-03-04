@@ -44,12 +44,31 @@ JotaOrchestrator distingue dos tipos de credenciales:
 El archivo `.env` del Orchestrator debe contener:
 
 ```env
+# Obligatorias
 ORCHESTRATOR_ID=<id_interno_del_orchestrator>
 ORCHESTRATOR_API_KEY=<clave_interna>
 JOTA_DB_URL=https://...
 JOTA_DB_SK=<server_key_para_jotadb>
 INFERENCE_SERVICE_URL=ws(s)://...
-SSL_VERIFY=true          # false si usas certificados auto-firmados en desarrollo
+
+# Herramientas
+TAVILY_API_KEY=<tu_clave_tavily>     # Opcional. Sin ella, web_search lanza error al invocarse
+TAVILY_SEARCH_DEPTH=basic            # "basic" | "advanced"
+TAVILY_MAX_RESULTS=5
+
+# Comportamiento (con defaults razonables, normalmente no hay que tocarlos)
+INFERENCE_DEFAULT_TEMP=0.7
+INFERENCE_TOKEN_TIMEOUT=30.0         # segundos esperando el siguiente token
+INFERENCE_LOAD_MODEL_TIMEOUT=30.0
+INFERENCE_LIST_MODELS_TIMEOUT=10.0
+INFERENCE_SESSION_TIMEOUT=5.0
+MODELS_CACHE_TTL=300.0               # segundos que se cachea la lista de modelos
+TOOL_MAX_OUTPUT_CHARS=4000           # truncación de output de herramientas
+MEMORY_TOOL_OUTPUT_CAP=1500          # truncación al inyectar en contexto
+JOTA_DB_TIMEOUT=10.0
+
+SSL_VERIFY=true                      # false para certificados auto-firmados en desarrollo
+ENABLE_GBNF_GRAMMAR=false            # Deprecated. true solo para compatibilidad legacy
 ```
 
 > ⚠️ El cliente **nunca** debe conocer `ORCHESTRATOR_API_KEY` ni `JOTA_DB_SK`. Éstas son credenciales de servicio interno.
@@ -582,7 +601,7 @@ ws.onclose = (event) => {
 - Al abrirse la conexión, el Orchestrator **recupera automáticamente** el historial de la `conversation_id` desde JotaDB e inyecta los mensajes como contexto en la sesión del InferenceEngine via `set_context`.
 - Cada mensaje de usuario y cada respuesta del asistente son **persistidos automáticamente** en JotaDB durante la sesión.
 - Las respuestas del asistente guardadas incluyen `metadata.model_id` para trazabilidad del modelo usado.
-- Si una inferencia se interrumpe (desconexión abrupta), la respuesta parcial se guarda con el sufijo `[INTERRUPTED]`.
+- Si una inferencia se interrumpe (desconexión abrupta), la respuesta parcial se guarda con el sufijo `[INTERRUPTED]` definido en `constants.INTERRUPTED_MARKER`.
 
 ---
 
@@ -610,8 +629,8 @@ ws.onclose = (event) => {
 ## Notas de Implementación y Limitaciones
 
 ### Caché de modelos
-`GET /chat/models` y la validación en `PATCH /chat/conversations/{id}` usan una **caché en memoria con TTL de 5 minutos**. Esto significa que:
-- Los modelos recién añadidos al Engine pueden tardar hasta 5 minutos en aparecer.
+`GET /chat/models` y la validación en `PATCH /chat/conversations/{id}` usan una **caché en memoria con TTL configurable** (`MODELS_CACHE_TTL`, default 300s / 5 minutos). Esto significa que:
+- Los modelos recién añadidos al Engine pueden tardar hasta `MODELS_CACHE_TTL` segundos en aparecer.
 - Reinicios del Orchestrator invalidan la caché (se recarga en la próxima llamada).
 
 ### Sesiones de inferencia por usuario
