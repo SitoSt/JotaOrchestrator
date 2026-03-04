@@ -1,4 +1,5 @@
 from typing import Optional
+
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -15,7 +16,8 @@ class Settings(BaseSettings):
     ORCHESTRATOR_API_KEY: str  # API Key del Orchestrator para servicios internos
     
     # Tool Config
-    TAVILY_API_KEY: str
+    TAVILY_API_KEY: Optional[str] = None
+    ENABLE_GBNF_GRAMMAR: bool = False  # Deprecated: Use system prompt instead
 
     
     # JotaDB Integration

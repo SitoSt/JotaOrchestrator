@@ -2,6 +2,7 @@ import logging
 from src.core.memory import MemoryManager
 from src.services.inference import InferenceClient
 from src.core.controller import JotaController
+import src.tools  # noqa: F401 — triggers @tool decorator registrations
 
 logger = logging.getLogger(__name__)
 
