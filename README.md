@@ -23,6 +23,23 @@ El sistema se divide en módulos especializados:
 - Soporte **Multusesión Stateless**: Gestiona múltiples conversaciones simultáneamente delegando el estado en JotaDB.
 - **Resiliencia**: Autenticación inmediata, **Exponential Backoff** para reconexión, y aborto de sesiones en desconexión del cliente.
 
+### 3. Sistema de Herramientas (Tool System)
+- **ToolManager** con decorador `@tool` para registro dinámico y generación automática de esquemas JSON.
+- **Tavily Web Search**: Búsqueda web asíncrona integrada (top 5 resultados) vía `tavily-python`.
+- **MCP Client**: Integración con servidores MCP (Model Context Protocol) vía SDK de Anthropic para herramientas externas.
+- **Gramáticas GBNF**: Generación dinámica de gramáticas para forzar salidas JSON estructuradas en el motor de inferencia.
+- **Bucle de Re-Inferencia**: El modelo puede pausar su respuesta, ejecutar una herramienta, y reanudar con los datos obtenidos.
+
+### 4. Seguridad y Permisos de Herramientas
+- **Roles por cliente**: `public` / `user` / `admin` — cada herramienta declara su nivel de acceso requerido.
+- **Sandboxing de salida**: Las respuestas de herramientas se truncan automáticamente (4000 chars) para prevenir desbordamiento de contexto.
+- **Filtrado dinámico**: El modelo solo ve las herramientas que el `client_id` tiene permiso de usar.
+
+### 5. Memoria y Trazabilidad
+- Soporte para rol `tool` en la base de datos con metadata de nombre de herramienta y tiempo de ejecución.
+- Los "pensamientos" pre-herramienta del modelo se guardan en DB (`metadata.thinking=true`) pero no se muestran al usuario.
+- Tokens de estado estructurados (`{"type": "status"}`) por WebSocket para indicadores de progreso en el frontend.
+
 ## 🛠️ Configuración y Ejecución
 
 1. **Variables de Entorno**:
@@ -33,6 +50,7 @@ El sistema se divide en módulos especializados:
    INFERENCE_SERVICE_URL="ws://greenhouse.local:3000/api/inference"
    INFERENCE_CLIENT_ID="tu_id"
    INFERENCE_API_KEY="tu_key"
+   TAVILY_API_KEY="tu_tavily_key"  # Opcional: para búsqueda web
    ```
 
 2. **Ejecutar Orquestador**:

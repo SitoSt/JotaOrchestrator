@@ -31,7 +31,10 @@ El orquestador actúa como un proxy inteligente y gestor de estado:
    - Autentica (`auth`), crea sesiones (`create_session`) y las cierra explícitamente (`close_session`) bajo demanda para no saturar los límites de recursos.
    - Despacha streams de tokens concurrentes usando colas asíncronas (`asyncio.Queue`).
    - Soporta **Exponential Backoff** para reconexión automática.
+   - **Detección de `<tool_call>`**: Intercepta tokens que contienen etiquetas XML de tool calling, parsea el JSON y emite un dict estructurado al controlador.
+   - **Gramáticas GBNF**: Genera y envía gramáticas dinámicas al motor para forzar salidas JSON cuando hay herramientas registradas.
 4. **Streaming**: Los tokens fluyen en tiempo real de `InferenceCenter` -> `Orchestrator` -> `User` sin bloqueo.
+5. **Tool Execution Loop**: Si el modelo emite un `<tool_call>`, el controlador pausa el streaming, ejecuta la herramienta (Tavily, MCP, etc.), guarda el resultado en JotaDB, y relanza una segunda inferencia con el contexto actualizado.
 
 ### Gestión de Memoria Unificada (JotaDB)
 * **Persistencia Externa:** El orquestador no almacena estado. Todo reside en JotaDB.
@@ -47,9 +50,19 @@ El orquestador actúa como un proxy inteligente y gestor de estado:
 * [x] Implementar streaming de tokens en tiempo real (Async Generators).
 * [x] API WebSocket para clientes finales.
 
-### Fase 2: Lógica de Decisión y Routing (🚧 En Progreso)
-* Desarrollar el `IntentRouter` para distinguir comandos de conversación.
-* Estructura de "Tool Calling" para domótica.
+### Fase 2: Lógica de Decisión y Tool Calling (✅ Completado)
+* [x] Implementar `ToolManager` con decorador `@tool` y generación automática de esquemas JSON.
+* [x] Integrar Tavily Web Search como herramienta asíncrona.
+* [x] Integrar cliente MCP (Model Context Protocol) para herramientas externas.
+* [x] Implementar bucle de re-inferencia recursivo (modelo → herramienta → re-inferencia).
+* [x] Generar gramáticas GBNF dinámicas para output estructurado.
+* [x] Tokens de estado (`{"type": "status"}`) por WebSocket para indicadores de progreso.
+* [x] Filtrado de "pensamientos" pre-herramienta (guardados en DB, ocultos al usuario).
+
+### Fase 2.5: Seguridad y Sandboxing de Herramientas (✅ Completado)
+* [x] Sistema de permisos por rol (`public` / `user` / `admin`) integrado con `client_id`.
+* [x] Truncado de salida de herramientas (4000 chars) para prevención de Context Overflow.
+* [x] Filtrado dinámico: el modelo solo ve herramientas accesibles al cliente actual.
 
 ### Fase 3: Interfaz y Observabilidad
 * Web Dashboard para control y métricas.
@@ -59,4 +72,5 @@ El orquestador actúa como un proxy inteligente y gestor de estado:
 ## 4. Estándares
 * **WebSockets (WS/WSS):** Estándar comunicación streaming.
 * **AsyncIO:** Núcleo de concurrencia en Python para manejar I/O intenso sin bloquear.
-* **Seguridad:** Autenticación por Tokens en capa de transporte.
+* **Seguridad:** Autenticación por Tokens en capa de transporte + permisos por rol en herramientas.
+* **GBNF Grammars:** Gramáticas formales para constraining de salidas del modelo.

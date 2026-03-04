@@ -103,7 +103,13 @@ Cliente                       JotaOrchestrator              JotaDB           Inf
   │                                   │── ensure_session ────────────────────────────>│
   │                                   │── set_context ───────────────────────────────>│
   │                                   │── save_message(user) ───>│                  │
-  │                                   │── infer (acumula tokens internamente) ───────>│
+  │                                   │── infer (streaming interno) ─────────────────>│
+  │                                   │                        │                    │
+  │                                   │   [Si detecta <tool_call>]                   │
+  │                                   │── execute_tool (Tavily/MCP) ──────────────>  │
+  │                                   │── save_message(tool) ───>│                  │
+  │                                   │── RE-INFER (contexto actualizado) ───────────>│
+  │                                   │                        │                    │
   │                                   │◄─ tokens ... end ───────────────────────────│
   │                                   │── save_message(assistant)──>│               │
   │                                   │── release_session ───────────────────────────>│
@@ -298,7 +304,7 @@ Cliente                       JotaOrchestrator              JotaDB           Inf
       "id": "msg-uuid-0001",
       "conversation_id": "conv-uuid-1234",
       "role": "user",
-      "content": "Hola, ¿cómo estás?",
+      "content": "Busca información sobre energía solar",
       "created_at": "2026-03-03T17:00:10Z",
       "metadata": null
     },
@@ -306,8 +312,30 @@ Cliente                       JotaOrchestrator              JotaDB           Inf
       "id": "msg-uuid-0002",
       "conversation_id": "conv-uuid-1234",
       "role": "assistant",
-      "content": "¡Hola! Estoy bien, gracias. ¿En qué puedo ayudarte?",
-      "created_at": "2026-03-03T17:00:15Z",
+      "content": "Voy a buscar información actualizada...",
+      "created_at": "2026-03-03T17:00:12Z",
+      "metadata": {
+        "model_id": "llama-3-8b-instruct",
+        "thinking": true
+      }
+    },
+    {
+      "id": "msg-uuid-0003",
+      "conversation_id": "conv-uuid-1234",
+      "role": "tool",
+      "content": "{\"results\": [{\"title\": \"Solar energy overview...\"}]}",
+      "created_at": "2026-03-03T17:00:14Z",
+      "metadata": {
+        "tool_name": "web_search",
+        "execution_time": "1.45s"
+      }
+    },
+    {
+      "id": "msg-uuid-0004",
+      "conversation_id": "conv-uuid-1234",
+      "role": "assistant",
+      "content": "La energía solar es una fuente de energía renovable...",
+      "created_at": "2026-03-03T17:00:18Z",
       "metadata": {
         "model_id": "llama-3-8b-instruct"
       }
@@ -316,7 +344,11 @@ Cliente                       JotaOrchestrator              JotaDB           Inf
 }
 ```
 
-> **El campo `metadata.model_id`** en mensajes del asistente indica qué modelo generó esa respuesta, permitiendo trazabilidad completa incluso si el modelo se cambia mid-conversation.
+> **Roles de mensaje:**
+> - `user` — Mensaje del usuario.
+> - `assistant` — Respuesta del modelo. `metadata.thinking=true` indica pensamiento pre-herramienta (no visible al usuario en tiempo real).
+> - `tool` — Resultado de una herramienta ejecutada. `metadata.tool_name` y `metadata.execution_time` proporcionan trazabilidad.
+> - `system` — Mensajes de sistema internos.
 
 **Errores:**
 ```json
@@ -489,11 +521,16 @@ CIERRE (WebSocketDisconnect o error)
 | Dirección | Formato | Descripción |
 |-----------|---------|-------------|
 | Cliente → Servidor | Texto plano | El mensaje del usuario. Ej: `"¿Cuándo fue la Revolución Francesa?"` |
-| Servidor → Cliente | Texto plano (fragmentos) | Tokens individuales conforme se generan |
+| Servidor → Cliente | JSON `{"type": "token", "content": "..."}` | Fragmentos de texto de la respuesta del modelo |
+| Servidor → Cliente | JSON `{"type": "status", "content": "..."}` | Indicadores de estado (búsqueda, procesamiento) — **no es texto para el usuario** |
+| Servidor → Cliente | JSON `{"type": "model_switched", ...}` | Confirmación de cambio de modelo mid-session |
+| Servidor → Cliente | JSON `{"type": "error", ...}` | Mensaje de error |
 | Cierre con `4001` | — | Autenticación fallida (antes de `accept`) |
 | Cierre con `1011` | — | Error interno del servidor |
 
-> El cliente acumula los fragmentos de texto hasta detectar el fin de la respuesta (el servidor no envía un frame especial de "fin" — la respuesta termina cuando el servidor deja de enviar datos hasta el siguiente mensaje del cliente).
+> **Importante:** El cliente debe parsear cada frame como JSON y actuar según el campo `type`:
+> - `token` → Acumular `content` en el buffer de respuesta visible.
+> - `status` → Mostrar indicador visual (spinner, texto de estado) sin acumular en la respuesta.
 
 #### Ejemplo de cliente JavaScript
 
@@ -507,13 +544,30 @@ const ws = new WebSocket(
 let buffer = "";
 
 ws.onmessage = (event) => {
-  buffer += event.data;
-  // Actualiza la UI con cada fragmento recibido
-  document.getElementById("response").textContent = buffer;
+  try {
+    const msg = JSON.parse(event.data);
+    
+    if (msg.type === "token") {
+      // Texto de respuesta del modelo — acumular y mostrar
+      buffer += msg.content;
+      document.getElementById("response").textContent = buffer;
+    } else if (msg.type === "status") {
+      // Indicador de estado — mostrar spinner o texto temporal
+      document.getElementById("status").textContent = msg.content;
+    } else if (msg.type === "error") {
+      console.error("Server error:", msg.message);
+    } else if (msg.type === "model_switched") {
+      console.log("Model changed to:", msg.model_id);
+    }
+  } catch (e) {
+    // Fallback: tratar como texto plano
+    buffer += event.data;
+  }
 };
 
 ws.onopen = () => {
-  ws.send("Hola, ¿qué es el aprendizaje federado?");
+  buffer = "";
+  ws.send("Busca información sobre inteligencia artificial");
 };
 
 ws.onerror = (error) => console.error("WebSocket error:", error);
