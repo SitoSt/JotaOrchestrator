@@ -138,10 +138,19 @@ async def chat_endpoint(
     client_data = await memory_manager.validate_client_key(x_client_key)
     if not x_client_key or not client_data:
         return {"status": "error", "message": "Unauthorized"}
+        
+    # 2. Validar tipo de cliente
+    client_type = client_data.get("client_type", "chat")
+    if client_type == "quick":
+        return {
+            "status": "error", 
+            "message": "Client type 'quick' not allowed on /chat endpoint. Use /quick instead."
+        }
+        
     client_id = client_data["id"]
 
     try:
-        # 2. Conversation Management
+        # 3. Conversation Management
         conversation = await memory_manager.create_conversation(
             request.user_id, client_id=client_id, model_id=request.model_id
         )
@@ -207,6 +216,14 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         logger.warning(f"Unauthorized access attempt for user {user_id}")
         await websocket.close(code=4001, reason="Unauthorized")
         return
+        
+    # 2. Validar tipo de cliente
+    client_type = client_data.get("client_type", "chat")
+    if client_type == "quick":
+        logger.warning(f"QUICK client {client_data['id']} attempted WS connection")
+        await websocket.close(code=4003, reason="Client type 'quick' not allowed on WebSocket")
+        return
+        
     client_id = client_data["id"]
 
     await websocket.accept()

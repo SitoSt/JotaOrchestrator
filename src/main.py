@@ -4,8 +4,9 @@ import asyncio
 import logging
 from src.core.config import settings
 from src.api.chat import router as chat_router
+from src.api.quick import router as quick_router
 # from src.services.transcription import transcription_client  # Disabled until MQTT is available
-from src.core.services import inference_client, memory_manager, shutdown_services
+from src.core.services import inference_client, memory_manager, mqtt_service, shutdown_services
 
 # Configure root logger so all src.* loggers propagate to the console.
 # Gunicorn only sets up gunicorn.*/uvicorn.* loggers; without this,
@@ -61,6 +62,16 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️  Inference Engine: Conexión inicial fallida (reintentando en segundo plano) - {e}")
     
     logger.info("")  # Línea en blanco
+
+    # 3. Connect to MQTT broker (if enabled)
+    if settings.MQTT_ENABLED:
+        logger.info("📡 Conectando con broker MQTT...")
+        logger.info(f"   └─ Broker: {settings.MQTT_BROKER_HOST}:{settings.MQTT_BROKER_PORT}")
+        logger.info(f"   └─ Topic:  {settings.MQTT_SUBSCRIBE_TOPIC}")
+        await mqtt_service.connect()
+        logger.info("✅ MQTT: Suscrito y escuchando")
+        logger.info("")  # Línea en blanco
+
     logger.info("=" * 60)
     logger.info("✨ JotaOrchestrator listo para recibir peticiones")
     logger.info("=" * 60)
@@ -82,16 +93,20 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+_cors_origins = settings.CORS_ORIGINS
+_allow_credentials = "*" not in _cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permits all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Permits all methods
-    allow_headers=["*"],  # Permits all headers
+    allow_origins=_cors_origins,
+    allow_credentials=_allow_credentials,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # app.include_router(chat_router, prefix="/api/v1")
 app.include_router(chat_router)
+app.include_router(quick_router)
 
 
 @app.get("/")

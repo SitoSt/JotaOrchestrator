@@ -8,3 +8,4 @@ pytest-asyncio
 gunicorn
 tavily-python
 mcp
+aiomqtt

@@ -18,12 +18,11 @@ class MemoryManager:
         }
         
         # Connection retries for resilience
-        transport = httpx.AsyncHTTPTransport(retries=3)
+        transport = httpx.AsyncHTTPTransport(retries=3, verify=settings.SSL_VERIFY)
         self.client = httpx.AsyncClient(
-            transport=transport, 
+            transport=transport,
             headers=self.base_headers,  # Usar headers base con Bearer
             timeout=settings.JOTA_DB_TIMEOUT,
-            verify=settings.SSL_VERIFY  # SSL certificate verification
         )
 
     async def close(self):

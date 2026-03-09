@@ -500,6 +500,7 @@ class InferenceClient:
         params: Optional[Dict[str, Any]] = None,
         client_id: int = None,
         model_id: Optional[str] = None,
+        persist_messages: bool = True,
     ) -> AsyncGenerator[Any, None]:
         """
         Envía un prompt al InferenceCenter y hace streaming de los tokens de respuesta.
@@ -609,14 +610,15 @@ class InferenceClient:
                     if len(full_text) > yielded_len:
                         yield full_text[yielded_len:]
                         
-                    await self.memory_manager.save_message(
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        role="assistant",
-                        content=full_text,
-                        client_id=client_id,
-                        metadata={"model_id": model_id} if model_id else None,
-                    )
+                    if persist_messages:
+                        await self.memory_manager.save_message(
+                            conversation_id=conversation_id,
+                            user_id=user_id,
+                            role="assistant",
+                            content=full_text,
+                            client_id=client_id,
+                            metadata={"model_id": model_id} if model_id else None,
+                        )
                     logger.info(f"{log_prefix} Inference complete (model={model_id!r}).")
                     break
                 elif op == "error":
@@ -629,14 +631,15 @@ class InferenceClient:
             if response_buffer:
                 logger.info(f"{log_prefix} Saving interrupted response.")
                 partial_response = "".join(response_buffer) + INTERRUPTED_MARKER
-                await self.memory_manager.save_message(
-                    conversation_id=conversation_id,
-                    user_id=user_id,
-                    role="assistant",
-                    content=partial_response,
-                    client_id=client_id,
-                    metadata={"model_id": model_id, "interrupted": True} if model_id else {"interrupted": True},
-                )
+                if persist_messages:
+                    await self.memory_manager.save_message(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        role="assistant",
+                        content=partial_response,
+                        client_id=client_id,
+                        metadata={"model_id": model_id, "interrupted": True} if model_id else {"interrupted": True},
+                    )
             
             await self.memory_manager.mark_conversation_error(conversation_id, user_id)
             raise e

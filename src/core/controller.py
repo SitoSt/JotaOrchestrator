@@ -184,6 +184,8 @@ class JotaController:
         user_id = payload.get("user_id")
         client_id = payload.get("client_id")
         model_id = payload.get("model_id")
+        stateless = payload.get("stateless", False)
+        system_prompt_override = payload.get("system_prompt_override")
 
         if not session_id or not conversation_id or not user_id:
             logger.error("Missing session_id, conversation_id, or user_id in payload")
@@ -194,11 +196,12 @@ class JotaController:
 
         try:
             # Pre-infer: garantizar que el modelo correcto está cargado
-            await self._ensure_model_loaded(conversation_id, client_id)
+            if not stateless:
+                await self._ensure_model_loaded(conversation_id, client_id)
 
             # Usar el modelo activo real (puede haber sido actualizado por _ensure_model_loaded)
             effective_model = self.inference_client.current_engine_model or model_id
-            
+
             from src.core.tool_manager import tool_manager, ToolPermissionError
             from src.core.config import settings as _settings
             from src.utils.tool_parser import extract_tool_calls, remove_tool_calls_from_text
@@ -206,7 +209,8 @@ class JotaController:
             import json as _json
             tool_instructions = tool_manager.get_system_prompt_addition(client_id=client_id)
 
-            system_prompt = _settings.AGENT_BASE_SYSTEM_PROMPT
+            base_prompt = system_prompt_override or _settings.AGENT_BASE_SYSTEM_PROMPT
+            system_prompt = base_prompt
             if tool_instructions:
                 logger.info(f"[TRACE] Tool instructions active ({len(tool_instructions)} chars)")
                 system_prompt += "\n\n" + tool_instructions
@@ -246,14 +250,15 @@ class JotaController:
                     # but DO NOT yield it to the user.
                     if pre_tool_thinking:
                         thinking_text = "".join(pre_tool_thinking)
-                        await self.memory_manager.save_message(
-                            conversation_id=conversation_id,
-                            user_id=user_id,
-                            role="assistant",
-                            content=thinking_text,
-                            client_id=client_id,
-                            metadata={"model_id": effective_model, "thinking": True},
-                        )
+                        if not stateless:
+                            await self.memory_manager.save_message(
+                                conversation_id=conversation_id,
+                                user_id=user_id,
+                                role="assistant",
+                                content=thinking_text,
+                                client_id=client_id,
+                                metadata={"model_id": effective_model, "thinking": True},
+                            )
                         pre_tool_thinking.clear()
                     
                     # Emit structured status tokens
@@ -265,27 +270,29 @@ class JotaController:
                         duration = f"{_time.time() - start_t:.2f}s"
                         
                         result_str = result if isinstance(result, str) else _json.dumps(result)
-                        
-                        await self.memory_manager.save_message(
-                            conversation_id=conversation_id,
-                            user_id=user_id,
-                            role="tool",
-                            content=result_str,
-                            client_id=client_id,
-                            metadata={"tool_name": tool_name, "execution_time": duration},
-                        )
+
+                        if not stateless:
+                            await self.memory_manager.save_message(
+                                conversation_id=conversation_id,
+                                user_id=user_id,
+                                role="tool",
+                                content=result_str,
+                                client_id=client_id,
+                                metadata={"tool_name": tool_name, "execution_time": duration},
+                            )
                         yield {"type": "status", "content": f"Búsqueda completada en {duration}. Generando respuesta..."}
                         tool_executed = True
                     except Exception as e:
                         logger.error(f"Tool execution failed: {e}")
-                        await self.memory_manager.save_message(
-                            conversation_id=conversation_id,
-                            user_id=user_id,
-                            role="tool",
-                            content=f"Error executing tool {tool_name}: {e}",
-                            client_id=client_id,
-                            metadata={"tool_name": tool_name, "error": True},
-                        )
+                        if not stateless:
+                            await self.memory_manager.save_message(
+                                conversation_id=conversation_id,
+                                user_id=user_id,
+                                role="tool",
+                                content=f"Error executing tool {tool_name}: {e}",
+                                client_id=client_id,
+                                metadata={"tool_name": tool_name, "error": True},
+                            )
                         yield {"type": "status", "content": f"Error al ejecutar {tool_name}: {e}"}
                         tool_executed = True
                 else:
@@ -303,7 +310,7 @@ class JotaController:
                             tool_args = tool_call_data["arguments"]
 
                             clean_thinking = remove_tool_calls_from_text(accumulated)
-                            if clean_thinking.strip():
+                            if clean_thinking.strip() and not stateless:
                                 await self.memory_manager.save_message(
                                     conversation_id=conversation_id,
                                     user_id=user_id,
@@ -322,26 +329,28 @@ class JotaController:
                                 result = await tool_manager.execute_tool(tool_name, client_id=client_id, **tool_args)
                                 duration = f"{_time.time() - start_t:.2f}s"
                                 result_str = result if isinstance(result, str) else _json.dumps(result)
-                                await self.memory_manager.save_message(
-                                    conversation_id=conversation_id,
-                                    user_id=user_id,
-                                    role="tool",
-                                    content=result_str,
-                                    client_id=client_id,
-                                    metadata={"tool_name": tool_name, "execution_time": duration},
-                                )
+                                if not stateless:
+                                    await self.memory_manager.save_message(
+                                        conversation_id=conversation_id,
+                                        user_id=user_id,
+                                        role="tool",
+                                        content=result_str,
+                                        client_id=client_id,
+                                        metadata={"tool_name": tool_name, "execution_time": duration},
+                                    )
                                 yield {"type": "status", "content": f"Búsqueda completada en {duration}. Generando respuesta..."}
                                 tool_executed = True
                             except Exception as e:
                                 logger.error(f"Tool execution failed (text detection): {e}")
-                                await self.memory_manager.save_message(
-                                    conversation_id=conversation_id,
-                                    user_id=user_id,
-                                    role="tool",
-                                    content=f"Error executing tool {tool_name}: {e}",
-                                    client_id=client_id,
-                                    metadata={"tool_name": tool_name, "error": True},
-                                )
+                                if not stateless:
+                                    await self.memory_manager.save_message(
+                                        conversation_id=conversation_id,
+                                        user_id=user_id,
+                                        role="tool",
+                                        content=f"Error executing tool {tool_name}: {e}",
+                                        client_id=client_id,
+                                        metadata={"tool_name": tool_name, "error": True},
+                                    )
                                 yield {"type": "status", "content": f"Error al ejecutar {tool_name}: {e}"}
                                 tool_executed = True
                     else:
@@ -356,9 +365,10 @@ class JotaController:
                 logger.info(f"Tool executed, starting RE-INFERENCE for session {session_id}")
                 yield {"type": "status", "content": "Analizando resultados..."}
                 
-                # Reload context
-                context = await self.memory_manager.get_conversation_messages(conversation_id, client_id)
-                await self.inference_client.set_context(session_id, context)
+                # Reload context (skip for stateless — no history to reload)
+                if not stateless:
+                    context = await self.memory_manager.get_conversation_messages(conversation_id, client_id)
+                    await self.inference_client.set_context(session_id, context)
                 
                 followup_prompt = _settings.TOOL_FOLLOWUP_PROMPT
                     
