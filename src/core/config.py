@@ -65,8 +65,8 @@ class Settings(BaseSettings):
     MQTT_CLIENT_ID: str = "jota-orchestrator"
     MQTT_KEEPALIVE: int = 60
     MQTT_QOS: int = 1
-    MQTT_SUBSCRIBE_TOPIC: str = "jota/transcriptions"
-    MQTT_RESPONSE_TOPIC_PREFIX: str = "jota/responses"
+    MQTT_SUBSCRIBE_TOPIC: str = "jota/stt"
+    MQTT_RESPONSE_TOPIC_PREFIX: str = "jota/response"
     MQTT_CLIENT_SYSTEM_PROMPT: str = (
         "You are Jota, a voice command assistant. "
         "Respond ONLY with 1-2 short phrases. "
