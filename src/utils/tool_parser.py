@@ -6,8 +6,10 @@ from src.core.constants import TOOL_CALL_OPEN, TOOL_CALL_CLOSE
 
 logger = logging.getLogger(__name__)
 
+# Permissive pattern: allows any amount of whitespace (including newlines) around the JSON
+# block, so models that insert line breaks inside the tag are handled correctly.
 TOOL_CALL_PATTERN = re.compile(
-    re.escape(TOOL_CALL_OPEN) + r'\s*(\{.*?\})\s*' + re.escape(TOOL_CALL_CLOSE),
+    re.escape(TOOL_CALL_OPEN) + r'[\s\n\r]*(\{.*?\})[\s\n\r]*' + re.escape(TOOL_CALL_CLOSE),
     re.DOTALL
 )
 
@@ -51,6 +53,16 @@ def extract_tool_calls(text: str) -> list[dict]:
         if not isinstance(arguments, dict):
             logger.warning(f"tool_parser: 'arguments' must be a dict, got {type(arguments).__name__!r} for tool {name!r} — skipping")
             continue
+
+        # Tool-specific argument validation
+        if name == "web_search":
+            query = arguments.get("query")
+            if not isinstance(query, str) or not query.strip():
+                logger.warning(
+                    f"tool_parser: 'web_search' requires a non-empty string 'query' argument, "
+                    f"got {query!r} — skipping"
+                )
+                continue
 
         results.append({"name": name, "arguments": arguments})
 

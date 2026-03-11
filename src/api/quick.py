@@ -14,24 +14,29 @@ import time
 from src.core.services import inference_client, memory_manager
 from src.core.tool_manager import tool_manager
 from src.core.config import settings
+from src.utils.tool_parser import remove_tool_calls_from_text
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# System prompt optimizado para respuestas cortas y directas, apto para TTS
-QUICK_SYSTEM_PROMPT = """Eres J, un asistente virtual de voz eficiente y directo.
-REGLAS ESTRICTAS PARA RESPUESTAS DE VOZ (TTS):
-- Responde siempre en 1-2 frases MÁXIMO (muy corto).
-- Sé en extremo directo, sin introducciones ni explicaciones largas.
-- NO uses formato markdown (**, *, _, #) porque será dictado por voz.
-- Lee los datos clave y omite detalles poco relevantes.
-- Confirma los comandos ejecutados con frases afirmativas breves.
+# System prompt optimizado para agentes de voz con soporte de herramientas y salida TTS
+QUICK_SYSTEM_PROMPT = """Eres J, un asistente de voz rápido y preciso.
 
-Ejemplos:
-- Usuario: "Enciende la luz del salón" → Asistente: "Luz del salón encendida."
-- Usuario: "¿Qué tiempo hace en Madrid?" → Asistente: "En Madrid hay 18 grados y está parcialmente nublado."
-- Usuario: "Pon un timer de 5 minutos" → Asistente: "Temporizador de 5 minutos iniciado."
+REGLAS DE RESPUESTA (obligatorias):
+1. Responde siempre en 1-2 frases MÁXIMO. Sin introducción, sin contexto extra.
+2. PROHIBIDO usar markdown: ningún **, *, _, #, ni listas con guiones. El texto se dicta por voz.
+3. Habla de forma directa y afirmativa. Omite fórmulas de cortesía innecesarias.
+
+USO DE HERRAMIENTAS:
+- Si necesitas buscar información, emite el bloque <tool_call> de forma INMEDIATA, sin ningún texto previo.
+- Tras recibir el resultado de la herramienta, resume lo relevante en MÁXIMO 2 frases.
+- No menciones que usaste una herramienta ni el proceso interno.
+
+Ejemplos de respuesta correcta:
+  Usuario: "Enciende la luz del salón" -> "Luz del salón encendida."
+  Usuario: "Cuánto es 15 por 37" -> "Son 555."
+  Usuario: "Qué tiempo hace en Madrid" -> "En Madrid hay 18 grados y cielo parcialmente nublado."
 """
 
 
@@ -59,10 +64,16 @@ async def _quick_stream_generator(
     if tool_instructions:
         full_prompt += f"\n{tool_instructions}\n"
     
-    # Parámetros optimizados para respuestas cortas
+    # Parámetros optimizados para respuestas cortas (primera pasada)
     quick_params = {
         "temp": 0.3,
         "max_tokens": 150,
+        "system_prompt": full_prompt
+    }
+    # Parámetros más estrictos para la respuesta final post-tool (forzar brevedad)
+    quick_final_params = {
+        "temp": 0.3,
+        "max_tokens": 100,
         "system_prompt": full_prompt
     }
     
@@ -111,11 +122,13 @@ async def _quick_stream_generator(
                     tool_executed = True
                     
             else:
-                # Token de texto regular
+                # Token de texto regular — limpiar residuos XML antes de enviar
                 if not tool_executed:
-                    yield json.dumps({"type": "token", "content": token}) + "\n"
+                    clean_token = remove_tool_calls_from_text(token) if isinstance(token, str) else token
+                    if clean_token:
+                        yield json.dumps({"type": "token", "content": clean_token}) + "\n"
                     
-        # 2. Segunda pasada si se ejecutó una tool
+        # 2. Segunda pasada si se ejecutó una tool (max_tokens más estricto para brevedad TTS)
         if tool_executed:
             yield json.dumps({"type": "status", "content": "Analizando resultados..."}) + "\n"
             async for token in inference_client.infer(
@@ -123,15 +136,18 @@ async def _quick_stream_generator(
                 prompt=settings.TOOL_FOLLOWUP_PROMPT,
                 conversation_id=f"quick_{session_id}",
                 user_id=user_id,
-                params=quick_params,
+                params=quick_final_params,
                 client_id=client_id,
                 model_id=model_id,
                 persist_messages=False,
             ):
                 if isinstance(token, dict):
-                    continue # Ignoring nested tools here
-                
-                yield json.dumps({"type": "token", "content": token}) + "\n"
+                    continue  # Ignorar tool calls anidados
+
+                # Limpiar cualquier residuo XML antes de enviar al cliente
+                clean_token = remove_tool_calls_from_text(token) if isinstance(token, str) else token
+                if clean_token:
+                    yield json.dumps({"type": "token", "content": clean_token}) + "\n"
                 
     except Exception as e:
         logger.error(f"{log_prefix} Error in stream generator: {e}")

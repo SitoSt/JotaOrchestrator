@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     # Tool output limits
     # ---------------------------------------------------------------------------
     TOOL_MAX_OUTPUT_CHARS: int = 4000         # cap before truncation in tool_manager
-    MEMORY_TOOL_OUTPUT_CAP: int = 1500        # cap when injecting tool results into context
+    MEMORY_TOOL_OUTPUT_CAP: int = 1000        # cap when injecting tool results into context (conservative for quick/voice flow)
 
     # ---------------------------------------------------------------------------
     # Tool Config
@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     TAVILY_API_KEY: Optional[str] = None
     TAVILY_SEARCH_DEPTH: str = "basic"
     TAVILY_MAX_RESULTS: int = 5
+    TAVILY_TIMEOUT: float = 6.0               # max seconds for a Tavily search before aborting
     ENABLE_GBNF_GRAMMAR: bool = False         # Deprecated: Use system prompt instead
 
     # ---------------------------------------------------------------------------
