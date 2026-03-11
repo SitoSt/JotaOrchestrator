@@ -13,7 +13,7 @@ import logging
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-@router.websocket("/ws/chat/{user_id}")
+@router.websocket("/chat/ws/{user_id}")
 async def websocket_endpoint(websocket: WebSocket, user_id: str):
     """
     Handles a full WebSocket chat session.

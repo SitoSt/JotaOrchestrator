@@ -105,9 +105,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# app.include_router(chat_router, prefix="/api/v1")
-app.include_router(chat_router)
-app.include_router(quick_router)
+# Route layout:
+#   /api/chat  → WebSocket only  (ws://host/api/chat/ws/{user_id})
+#   /api/quick → HTTP NDJSON     (POST http://host/api/quick)
+app.include_router(chat_router, prefix="/api")
+app.include_router(quick_router, prefix="/api")
 
 
 @app.get("/")
